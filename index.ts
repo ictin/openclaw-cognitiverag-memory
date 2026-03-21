@@ -65,6 +65,7 @@ export default function register(api: any) {
   const path = require('node:path');
   const pluginRoot = path.resolve(path.dirname(api?.source ?? api?.path ?? path.resolve('.')));
   const healthFile = path.join(pluginRoot, 'crag-health-state.json');
+  const memoryFile = path.join(pluginRoot, 'MEMORY.md');
   const memoryMirrorFile = path.join(pluginRoot, 'MEMORY.md');
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
 
@@ -162,6 +163,24 @@ export default function register(api: any) {
       rollbackRecommended: false,
       rollbackReason: null,
     });
+  };
+
+  const appendRememberEntry = async (rawText: string) => {
+    try {
+      const text = String(rawText ?? '').trim();
+      if (!text) return { ok: false, reason: 'empty' as const };
+      const line = `- ${text}`;
+      const existing = await fs.readFile(memoryFile, 'utf8').catch(() => '');
+      if (existing.split(/\r?\n/).some((l) => l.trim() === line)) {
+        return { ok: true, duplicate: true as const, line };
+      }
+      const next = `${existing}${existing && !existing.endsWith('\n') ? '\n' : ''}${line}\n`;
+      await fs.writeFile(memoryFile, next);
+      return { ok: true, duplicate: false as const, line };
+    } catch (error: any) {
+      api.logger?.warn?.(`[cognitiverag-memory] remember mirror failed ${String(error?.message ?? error)}`);
+      return { ok: false, reason: String(error?.message ?? error) };
+    }
   };
 
   const markFail = async (err: unknown) => {
@@ -306,6 +325,25 @@ export default function register(api: any) {
         `- fallback memory mirror active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
       ];
       return { text: lines.join('\n') };
+    },
+  });
+
+  api.registerCommand?.({
+    name: 'remember',
+    description: 'Save a durable note to fallback MEMORY.md.',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      try {
+        const text = Array.isArray(ctx?.args) ? ctx.args.join(' ').trim() : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? '').trim();
+        if (!text) return { text: 'Usage: /remember <text>' };
+        const result = await appendRememberEntry(text);
+        if (!result.ok) return { text: `Could not save memory: ${result.reason}` };
+        if (result.duplicate) return { text: 'That memory is already saved.' };
+        return { text: 'Saved to MEMORY.md.' };
+      } catch (error: any) {
+        return { text: `Could not save memory: ${String(error?.message ?? error)}` };
+      }
     },
   });
 
