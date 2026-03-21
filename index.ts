@@ -286,6 +286,16 @@ export default function register(api: any) {
           return { text: 'Already remembered.' };
         }
         const header = existing.trim() ? '\n' : '# Fallback Memory Mirror\n';
+        try {
+          await fs.writeFile('/tmp/remember-write-target-last.json', JSON.stringify({
+            timestamp: new Date().toISOString(),
+            pluginRoot,
+            memoryFile,
+            note,
+            noteLength: note.length,
+            cwd: process.cwd(),
+          }, null, 2));
+        } catch {}
         await fs.writeFile(memoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
           const current = existing.trim() ? existing : '# Fallback Memory Mirror\n';
           await fs.writeFile(memoryFile, `${current}${line}\n`);
