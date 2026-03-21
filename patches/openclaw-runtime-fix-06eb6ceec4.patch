@@ -1,0 +1,27 @@
+From 06eb6ceec47a9d30140b5b78f124f395cb725bbe Mon Sep 17 00:00:00 2001
+From: Constantin Iliescu <ictinpr@yahoo.com>
+Date: Sat, 21 Mar 2026 23:38:32 +0100
+Subject: [PATCH] Guard missing session entry in subagent list
+
+---
+ src/agents/subagent-control.ts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/agents/subagent-control.ts b/src/agents/subagent-control.ts
+index 0b969f5211..11f7aa7953 100644
+--- a/src/agents/subagent-control.ts
++++ b/src/agents/subagent-control.ts
+@@ -271,8 +271,8 @@ export function buildSubagentList(params: {
+       key: entry.childSessionKey,
+       cache,
+     }).entry;
+-    const totalTokens = resolveTotalTokens(sessionEntry);
+-    const usageText = formatTokenUsageDisplay(sessionEntry);
++    const totalTokens = sessionEntry ? resolveTotalTokens(sessionEntry) : undefined;
++    const usageText = sessionEntry ? formatTokenUsageDisplay(sessionEntry) : undefined;
+     const pendingDescendants = pendingDescendantCount(entry.childSessionKey);
+     const status = resolveRunStatus(entry, {
+       pendingDescendants,
+-- 
+2.43.0
+
