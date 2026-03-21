@@ -309,6 +309,35 @@ export default function register(api: any) {
   });
 
   api.registerCommand?.({
+    name: 'crag-remember',
+    description: 'Save a durable note to the workspace MEMORY.md fallback.',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      try {
+        const payload = ctx?.args;
+        const text = Array.isArray(payload)
+          ? payload.join(' ').trim()
+          : String(payload?.text ?? payload?.message ?? payload?.value ?? payload ?? '').trim();
+        if (!text) return { text: 'Usage: /crag-remember <text>' };
+        const line = `- ${text}`;
+        const existing = await fs.readFile(workspaceMemoryFile, 'utf8').catch(() => '');
+        if (existing.split(/\r?\n/).some((l) => l.trim() === line)) {
+          return { text: 'That memory is already saved.' };
+        }
+        const header = existing.trim() ? '\n' : '# Long-term Memory\n';
+        await fs.writeFile(workspaceMemoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
+          const current = existing.trim() ? existing : '# Long-term Memory\n';
+          await fs.writeFile(workspaceMemoryFile, `${current}${line}\n`);
+        });
+        return { text: 'Saved to MEMORY.md.' };
+      } catch (error: any) {
+        return { text: `Could not save memory: ${String(error?.message ?? error)}` };
+      }
+    },
+  });
+
+  api.registerCommand?.({
     name: 'crag-status',
     description: 'Show CognitiveRAG plugin/backend health and fallback status.',
     acceptsArgs: false,
