@@ -276,19 +276,19 @@ export default function register(api: any) {
     description: 'Append an explicit durable memory note to the local fallback MEMORY.md.',
     acceptsArgs: true,
     requireAuth: true,
-    handler: async (args: any) => {
+    handler: async (ctx: any) => {
       try {
         const note = Array.isArray(args) ? args.join(' ').trim() : String(args?.text ?? args?.message ?? args?.value ?? args ?? '').trim();
         if (!note) return { text: 'Usage: /remember <durable fact or preference>' };
         const line = `- ${note}`;
-        const existing = await fs.readFile(memoryMirrorFile, 'utf8').catch(() => '');
+        const existing = await fs.readFile(memoryFile, 'utf8').catch(() => '');
         if (existing.split(/\r?\n/).some((l) => l.trim() === line)) {
           return { text: 'Already remembered.' };
         }
         const header = existing.trim() ? '\n' : '# Fallback Memory Mirror\n';
-        await fs.writeFile(memoryMirrorFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
+        await fs.writeFile(memoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
           const current = existing.trim() ? existing : '# Fallback Memory Mirror\n';
-          await fs.writeFile(memoryMirrorFile, `${current}${line}\n`);
+          await fs.writeFile(memoryFile, `${current}${line}\n`);
         });
         return { text: `Remembered: ${note}` };
       } catch (error: any) {
