@@ -66,7 +66,6 @@ export default function register(api: any) {
   const pluginRoot = path.resolve(path.dirname(api?.source ?? api?.path ?? path.resolve('.')));
   const healthFile = path.join(pluginRoot, 'crag-health-state.json');
   const memoryFile = path.join(pluginRoot, 'MEMORY.md');
-  const memoryMirrorFile = path.join(pluginRoot, 'MEMORY.md');
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
 
   try {
@@ -328,25 +327,6 @@ export default function register(api: any) {
     },
   });
 
-  api.registerCommand?.({
-    name: 'remember',
-    description: 'Save a durable note to fallback MEMORY.md.',
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: async (ctx: any) => {
-      try {
-        const text = Array.isArray(ctx?.args) ? ctx.args.join(' ').trim() : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? '').trim();
-        if (!text) return { text: 'Usage: /remember <text>' };
-        const result = await appendRememberEntry(text);
-        if (!result.ok) return { text: `Could not save memory: ${result.reason}` };
-        if (result.duplicate) return { text: 'That memory is already saved.' };
-        return { text: 'Saved to MEMORY.md.' };
-      } catch (error: any) {
-        return { text: `Could not save memory: ${String(error?.message ?? error)}` };
-      }
-    },
-  });
-
   api.registerContextEngine?.('cognitiverag-memory', () => ({
     info: {
       id: 'cognitiverag-memory',
@@ -356,21 +336,6 @@ export default function register(api: any) {
     },
 
     async ingest(params: any) {
-      try {
-        const text = String(params?.message?.content ?? '');
-        const lower = text.toLowerCase();
-        const note = lower.startsWith('remember this:') || lower.startsWith('/remember ') ? text.replace(/^remember this:\s*/i, '').replace(/^\/remember\s+/i, '').trim() : '';
-        if (note) {
-          const line = `- ${note}`;
-          const existing = await fs.readFile(memoryMirrorFile, 'utf8').catch(() => '');
-          if (!existing.split(/\r?\n/).some((l) => l.trim() === line)) {
-            const next = `${existing}${existing && !existing.endsWith('\n') ? '\n' : ''}${line}\n`;
-            await fs.writeFile(memoryMirrorFile, next).catch(() => {});
-          }
-        }
-      } catch {
-        // never fail normal ingest due to mirror writes
-      }
       const sessionId = String(params?.sessionId ?? 'unknown-session');
       const role = String(params?.message?.role ?? 'unknown');
       const text = String(params?.message?.content ?? '');
