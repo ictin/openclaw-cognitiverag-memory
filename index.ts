@@ -66,6 +66,7 @@ export default function register(api: any) {
   const pluginRoot = path.resolve(path.dirname(api?.source ?? api?.path ?? path.resolve('.')));
   const healthFile = path.join(pluginRoot, 'crag-health-state.json');
   const memoryFile = path.join(pluginRoot, 'MEMORY.md');
+  const workspaceMemoryFile = path.join(process.cwd(), 'MEMORY.md');
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
 
   try {
