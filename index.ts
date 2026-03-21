@@ -278,7 +278,7 @@ export default function register(api: any) {
     requireAuth: true,
     handler: async (ctx: any) => {
       try {
-        const note = Array.isArray(args) ? args.join(' ').trim() : String(args?.text ?? args?.message ?? args?.value ?? args ?? '').trim();
+        const note = Array.isArray(ctx?.args) ? ctx.args.join(' ').trim() : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.text ?? ctx?.message ?? ctx?.value ?? ctx?.args ?? '').trim();
         if (!note) return { text: 'Usage: /remember <durable fact or preference>' };
         const line = `- ${note}`;
         const existing = await fs.readFile(memoryFile, 'utf8').catch(() => '');
