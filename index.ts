@@ -65,6 +65,7 @@ export default function register(api: any) {
   const path = require('node:path');
   const pluginRoot = path.resolve(path.dirname(api?.source ?? api?.path ?? path.resolve('.')));
   const healthFile = path.join(pluginRoot, 'crag-health-state.json');
+  const memoryMirrorFile = path.join(pluginRoot, 'MEMORY.md');
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
 
   try {
@@ -253,6 +254,32 @@ export default function register(api: any) {
   });
 
   api.registerCommand?.({
+    name: 'remember',
+    description: 'Append an explicit durable memory note to the local fallback MEMORY.md.',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (args: any) => {
+      try {
+        const note = Array.isArray(args) ? args.join(' ').trim() : String(args?.text ?? args?.message ?? args?.value ?? args ?? '').trim();
+        if (!note) return { text: 'Usage: /remember <durable fact or preference>' };
+        const line = `- ${note}`;
+        const existing = await fs.readFile(memoryMirrorFile, 'utf8').catch(() => '');
+        if (existing.split(/\r?\n/).some((l) => l.trim() === line)) {
+          return { text: 'Already remembered.' };
+        }
+        const header = existing.trim() ? '\n' : '# Fallback Memory Mirror\n';
+        await fs.writeFile(memoryMirrorFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
+          const current = existing.trim() ? existing : '# Fallback Memory Mirror\n';
+          await fs.writeFile(memoryMirrorFile, `${current}${line}\n`);
+        });
+        return { text: `Remembered: ${note}` };
+      } catch (error: any) {
+        return { text: `Could not save memory: ${String(error?.message ?? error)}` };
+      }
+    },
+  });
+
+  api.registerCommand?.({
     name: 'crag-status',
     description: 'Show CognitiveRAG plugin/backend health and fallback status.',
     acceptsArgs: false,
@@ -291,6 +318,21 @@ export default function register(api: any) {
     },
 
     async ingest(params: any) {
+      try {
+        const text = String(params?.message?.content ?? '');
+        const lower = text.toLowerCase();
+        const note = lower.startsWith('remember this:') || lower.startsWith('/remember ') ? text.replace(/^remember this:\s*/i, '').replace(/^\/remember\s+/i, '').trim() : '';
+        if (note) {
+          const line = `- ${note}`;
+          const existing = await fs.readFile(memoryMirrorFile, 'utf8').catch(() => '');
+          if (!existing.split(/\r?\n/).some((l) => l.trim() === line)) {
+            const next = `${existing}${existing && !existing.endsWith('\n') ? '\n' : ''}${line}\n`;
+            await fs.writeFile(memoryMirrorFile, next).catch(() => {});
+          }
+        }
+      } catch {
+        // never fail normal ingest due to mirror writes
+      }
       const sessionId = String(params?.sessionId ?? 'unknown-session');
       const role = String(params?.message?.role ?? 'unknown');
       const text = String(params?.message?.content ?? '');
