@@ -1,0 +1,37 @@
+{
+  "keys": [
+    "config",
+    "description",
+    "id",
+    "logger",
+    "name",
+    "on",
+    "pluginConfig",
+    "registerChannel",
+    "registerCli",
+    "registerCommand",
+    "registerContextEngine",
+    "registerGatewayMethod",
+    "registerHook",
+    "registerHttpRoute",
+    "registerProvider",
+    "registerService",
+    "registerTool",
+    "resolvePath",
+    "runtime",
+    "source",
+    "version"
+  ],
+  "methods": {
+    "registerHttpRoute": true,
+    "registerGatewayMethod": true,
+    "registerCli": true,
+    "registerCommand": true,
+    "registerHook": true,
+    "registerService": true,
+    "registerContextEngine": true,
+    "registerTool": true,
+    "registerProvider": true
+  },
+  "timestamp": "2026-03-19T20:18:22.630Z"
+}

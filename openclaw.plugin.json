@@ -1,0 +1,12 @@
+{
+  "id": "cognitiverag-memory",
+  "name": "CognitiveRAG Memory",
+  "description": "Local private plugin for CognitiveRAG memory integration.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "main": "index.ts",
+  "kind": "context-engine"
+}
