@@ -1,7 +1,106 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import fsSync from 'node:fs';
 
 const COG_RAG_BASE = 'http://127.0.0.1:8000';
+
+type AssembleShapeResult = {
+  messages: any[];
+  systemPromptAddition?: string;
+  estimatedTokens: number;
+  totalTokens: number;
+};
+
+export function shapeAssembleResponse(assemblyRes: any, budget = 4096): AssembleShapeResult {
+  const freshTail = Array.isArray(assemblyRes?.body?.fresh_tail) ? assemblyRes.body.fresh_tail : [];
+  const summaries = Array.isArray(assemblyRes?.body?.summaries) ? assemblyRes.body.summaries : [];
+  const contextBlock = assemblyRes?.body?.context_block ?? null;
+
+  const exactContextItems = Array.isArray(contextBlock?.exact_items) ? contextBlock.exact_items : [];
+  const derivedContextItems = Array.isArray(contextBlock?.derived_items) ? contextBlock.derived_items : [];
+  const contextProvenance = contextBlock?.provenance ?? null;
+
+  const structuredContextMessages = [
+    ...exactContextItems.map((item: any) => ({
+      role: 'user',
+      content: String(item?.content ?? item?.summary ?? item?.text ?? ''),
+      metadata: {
+        item_type: item?.item_type ?? 'exact_item',
+        exactness: item?.exactness ?? 'exact',
+        summarizable: item?.summarizable ?? false,
+        provenance: item?.provenance ?? contextProvenance ?? null,
+      },
+    })),
+    ...derivedContextItems.map((item: any) => ({
+      role: 'system',
+      content: String(item?.summary ?? item?.content ?? item?.text ?? ''),
+      metadata: {
+        item_type: item?.item_type ?? 'derived_item',
+        exactness: item?.exactness ?? 'derived',
+        summarizable: item?.summarizable ?? true,
+        provenance: item?.provenance ?? contextProvenance ?? null,
+      },
+    })),
+  ].filter((m: any) => String(m?.content ?? '').trim());
+
+  const messages = structuredContextMessages.length
+    ? structuredContextMessages
+    : freshTail
+        .map((m: any) => {
+          const sender = String(m?.sender ?? 'user');
+          const text = String(m?.text ?? '');
+          if (!text) return null;
+          return {
+            role: sender === 'assistant' ? 'assistant' : 'user',
+            content: text,
+          };
+        })
+        .filter(Boolean);
+
+  const rawSummaryItems = structuredContextMessages.length
+    ? []
+    : summaries
+        .map((s: any) => String(s?.summary ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 8);
+
+  const maxSummaryTokens = Math.min(512, Math.max(96, Math.floor(budget * 0.25)));
+  const maxSummaryChars = maxSummaryTokens * 4;
+  const summaryItems: string[] = [];
+  let usedChars = 0;
+  for (const item of rawSummaryItems) {
+    const prefixChars = summaryItems.length === 0 ? 0 : 3;
+    if (usedChars + prefixChars + item.length <= maxSummaryChars) {
+      summaryItems.push(item);
+      usedChars += prefixChars + item.length;
+      continue;
+    }
+    const remaining = maxSummaryChars - usedChars - prefixChars;
+    if (remaining > 24) summaryItems.push(item.slice(0, remaining - 1) + '…');
+    break;
+  }
+
+  const summaryText = summaryItems.join('\n- ');
+  const systemPromptAddition = structuredContextMessages.length
+    ? undefined
+    : (summaryText
+        ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
+        : undefined);
+
+
+  const estimatedTokens = Math.max(
+    0,
+    messages.reduce((n: number, m: any) => n + Math.ceil(String(m?.content ?? '').length / 4), 0) +
+      Math.ceil((systemPromptAddition ?? '').length / 4),
+  );
+  const totalTokens = estimatedTokens;
+
+  return { messages, systemPromptAddition, estimatedTokens, totalTokens };
+}
+
+type PluginMode = 'summary_only' | 'summary_plus_retrieved_facts' | 'full_external_tail';
+const DEFAULT_PLUGIN_MODE: PluginMode = 'summary_only';
 
 type HealthMode = 'healthy' | 'degraded' | 'offline' | 'unknown';
 type HealthState = {
@@ -62,7 +161,6 @@ async function postJson(path: string, body: any, timeoutMs = 3000) {
 }
 
 export default function register(api: any) {
-  const path = require('node:path');
   const pluginRoot = path.resolve(path.dirname(api?.source ?? api?.path ?? path.resolve('.')));
   const healthFile = path.join(pluginRoot, 'crag-health-state.json');
   const memoryFile = path.join(pluginRoot, 'MEMORY.md');
@@ -78,7 +176,6 @@ export default function register(api: any) {
       pluginRootCandidate: pluginRoot,
       healthFileCandidate: healthFile,
     });
-    const fsSync = require('node:fs');
     const diagPath = '/tmp/cognitiverag-plugin-bootstrap-diagnostic.json';
     const diag = {
       timestamp: new Date().toISOString(),
@@ -474,30 +571,62 @@ export default function register(api: any) {
 
         const freshTail = Array.isArray(assemblyRes?.body?.fresh_tail) ? assemblyRes.body.fresh_tail : [];
         const summaries = Array.isArray(assemblyRes?.body?.summaries) ? assemblyRes.body.summaries : [];
+        const contextBlock = assemblyRes?.body?.context_block ?? null;
 
-        const messages = freshTail
-          .map((m: any) => {
-            const sender = String(m?.sender ?? 'user');
-            const text = String(m?.text ?? '');
-            if (!text) return null;
-            return {
-              role: sender === 'assistant' ? 'assistant' : 'user',
-              content: text,
-            };
-          })
-          .filter(Boolean);
+        const exactContextItems = Array.isArray(contextBlock?.exact_items) ? contextBlock.exact_items : [];
+        const derivedContextItems = Array.isArray(contextBlock?.derived_items) ? contextBlock.derived_items : [];
+        const contextProvenance = contextBlock?.provenance ?? null;
 
-        const rawSummaryItems = summaries
-          .map((s: any) => String(s?.summary ?? '').trim())
-          .filter(Boolean)
-          .slice(0, 8);
+        const structuredContextMessages = [
+          ...exactContextItems.map((item: any) => ({
+            role: 'user',
+            content: String(item?.content ?? item?.summary ?? item?.text ?? ''),
+            metadata: {
+              item_type: item?.item_type ?? 'exact_item',
+              exactness: item?.exactness ?? 'exact',
+              summarizable: item?.summarizable ?? false,
+              provenance: item?.provenance ?? contextProvenance ?? null,
+            },
+          })),
+          ...derivedContextItems.map((item: any) => ({
+            role: 'system',
+            content: String(item?.summary ?? item?.content ?? item?.text ?? ''),
+            metadata: {
+              item_type: item?.item_type ?? 'derived_item',
+              exactness: item?.exactness ?? 'derived',
+              summarizable: item?.summarizable ?? true,
+              provenance: item?.provenance ?? contextProvenance ?? null,
+            },
+          })),
+        ].filter((m: any) => String(m?.content ?? '').trim());
+
+        const messages = structuredContextMessages.length
+          ? structuredContextMessages
+          : freshTail
+              .map((m: any) => {
+                const sender = String(m?.sender ?? 'user');
+                const text = String(m?.text ?? '');
+                if (!text) return null;
+                return {
+                  role: sender === 'assistant' ? 'assistant' : 'user',
+                  content: text,
+                };
+              })
+              .filter(Boolean);
+
+        const rawSummaryItems = structuredContextMessages.length
+          ? []
+          : summaries
+              .map((s: any) => String(s?.summary ?? '').trim())
+              .filter(Boolean)
+              .slice(0, 8);
 
         const maxSummaryTokens = Math.min(512, Math.max(96, Math.floor(budget * 0.25)));
         const maxSummaryChars = maxSummaryTokens * 4;
         const summaryItems: string[] = [];
         let usedChars = 0;
         for (const item of rawSummaryItems) {
-          const prefixChars = summaryItems.length === 0 ? 0 : 3; // '\n- '
+          const prefixChars = summaryItems.length === 0 ? 0 : 3;
           if (usedChars + prefixChars + item.length <= maxSummaryChars) {
             summaryItems.push(item);
             usedChars += prefixChars + item.length;
@@ -511,10 +640,11 @@ export default function register(api: any) {
         }
 
         const summaryText = summaryItems.join('\n- ');
-        const systemPromptAddition = summaryText
-          ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
-          : undefined;
-
+        const systemPromptAddition = structuredContextMessages.length
+          ? undefined
+          : (summaryText
+              ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
+              : undefined);
         const estimatedTokens = Math.max(
           0,
           messages.reduce((n: number, m: any) => n + Math.ceil(String(m?.content ?? '').length / 4), 0) +
@@ -526,11 +656,8 @@ export default function register(api: any) {
           `[cognitiverag-memory] assemble forwarded ${JSON.stringify({
             sessionId,
             status: assemblyRes.status,
-            freshTail: freshTail.length,
-            summaries: summaries.length,
-            summaryItemsUsed: summaryItems.length,
-            maxSummaryTokens,
-            maxSummaryChars,
+            freshTail: Array.isArray(assemblyRes?.body?.fresh_tail) ? assemblyRes.body.fresh_tail.length : 0,
+            summaries: Array.isArray(assemblyRes?.body?.summaries) ? assemblyRes.body.summaries.length : 0,
             systemPromptAdditionChars: (systemPromptAddition ?? '').length,
             messages: messages.length,
             estimatedTokens,
