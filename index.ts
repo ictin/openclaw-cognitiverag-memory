@@ -77,17 +77,18 @@ export function shapeAssembleResponse(assemblyRes: any, budget = 4096): Assemble
       continue;
     }
     const remaining = maxSummaryChars - usedChars - prefixChars;
-    if (remaining > 24) summaryItems.push(item.slice(0, remaining - 1) + '…');
+    if (remaining > 24) {
+      summaryItems.push(item.slice(0, remaining - 1) + '…');
+    }
     break;
   }
 
   const summaryText = summaryItems.join('\n- ');
   const systemPromptAddition = structuredContextMessages.length
     ? undefined
-    : (summaryText
-        ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
-        : undefined);
-
+    : summaryText
+      ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
+      : undefined;
 
   const estimatedTokens = Math.max(
     0,
@@ -102,7 +103,7 @@ export function shapeAssembleResponse(assemblyRes: any, budget = 4096): Assemble
 type PluginMode = 'summary_only' | 'summary_plus_retrieved_facts' | 'full_external_tail';
 const DEFAULT_PLUGIN_MODE: PluginMode = 'summary_only';
 
-type HealthMode = 'healthy' | 'degraded' | 'offline' | 'unknown';
+type HealthMode = 'healthy' | 'degraded' | 'offline' | 'unknown' | 'rolled_back';
 type HealthState = {
   backendReachable: boolean;
   mode: HealthMode;
@@ -190,10 +191,14 @@ export default function register(api: any) {
       pluginRootExists: fsSync.existsSync(pluginRoot),
       healthDirExists: fsSync.existsSync(path.dirname(healthFile)),
     };
-    try { fsSync.writeFileSync(diagPath, JSON.stringify(diag, null, 2)); } catch {}
+    try {
+      fsSync.writeFileSync(diagPath, JSON.stringify(diag, null, 2));
+    } catch {}
     const dir = healthFile.includes('/') ? healthFile.slice(0, healthFile.lastIndexOf('/')) : '.';
     if (dir) {
-      try { fsSync.mkdirSync(dir, { recursive: true }); } catch {}
+      try {
+        fsSync.mkdirSync(dir, { recursive: true });
+      } catch {}
     }
     if (!fsSync.existsSync(healthFile)) {
       const initialState = {
@@ -301,17 +306,27 @@ export default function register(api: any) {
 
   const probeBackend = async () => {
     try {
-      const probe = await postJson('/session_assemble_context', {
-        session_id: '__crag_probe__',
-        fresh_tail_count: 0,
-        budget: 256,
-      }, 1500);
+      const probe = await postJson(
+        '/session_assemble_context',
+        {
+          session_id: '__crag_probe__',
+          fresh_tail_count: 0,
+          budget: 256,
+        },
+        1500,
+      );
       if (probe.status >= 200 && probe.status < 300) {
         const state = await markSuccess();
         return { ok: true, state, backendReachable: true, mode: 'healthy' as const };
       }
       const state = await markFail(`probe_status_${probe.status}`);
-      return { ok: false, state, backendReachable: false, mode: state?.mode ?? 'degraded', reason: `HTTP ${probe.status}` };
+      return {
+        ok: false,
+        state,
+        backendReachable: false,
+        mode: state?.mode ?? 'degraded',
+        reason: `HTTP ${probe.status}`,
+      };
     } catch (e) {
       const state = await markFail(e);
       return { ok: false, state, reason: String((e as any)?.message ?? e) };
@@ -349,21 +364,23 @@ export default function register(api: any) {
       } catch (e: any) {
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json; charset=utf-8');
-        res.end(JSON.stringify({
-          pluginLoaded: true,
-          contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
-          backendReachable: false,
-          mode: 'offline',
-          lastSuccessAt: null,
-          lastFailAt: new Date().toISOString(),
-          lastError: String(e?.message ?? e),
-          consecutiveFailures: 0,
-          fallbackMemoryMirrorActive: false,
-          rollbackRecommended: false,
-          rollbackReason: String(e?.message ?? e),
-          rollbackReady: true,
-          lastRollbackAt: null,
-        }));
+        res.end(
+          JSON.stringify({
+            pluginLoaded: true,
+            contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
+            backendReachable: false,
+            mode: 'offline',
+            lastSuccessAt: null,
+            lastFailAt: new Date().toISOString(),
+            lastError: String(e?.message ?? e),
+            consecutiveFailures: 0,
+            fallbackMemoryMirrorActive: false,
+            rollbackRecommended: false,
+            rollbackReason: String(e?.message ?? e),
+            rollbackReady: true,
+            lastRollbackAt: null,
+          }),
+        );
         return true;
       }
     },
@@ -376,7 +393,18 @@ export default function register(api: any) {
     requireAuth: true,
     handler: async (ctx: any) => {
       try {
-        const note = Array.isArray(ctx?.args) ? ctx.args.join(' ').trim() : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.text ?? ctx?.message ?? ctx?.value ?? ctx?.args ?? '').trim();
+        const note = Array.isArray(ctx?.args)
+          ? ctx.args.join(' ').trim()
+          : String(
+              ctx?.args?.text ??
+                ctx?.args?.message ??
+                ctx?.args?.value ??
+                ctx?.text ??
+                ctx?.message ??
+                ctx?.value ??
+                ctx?.args ??
+                '',
+            ).trim();
         if (!note) return { text: 'Usage: /remember <durable fact or preference>' };
         const line = `- ${note}`;
         const existing = await fs.readFile(memoryFile, 'utf8').catch(() => '');
@@ -385,19 +413,28 @@ export default function register(api: any) {
         }
         const header = existing.trim() ? '\n' : '# Fallback Memory Mirror\n';
         try {
-          await fs.writeFile('/tmp/remember-write-target-last.json', JSON.stringify({
-            timestamp: new Date().toISOString(),
-            pluginRoot,
-            memoryFile,
-            note,
-            noteLength: note.length,
-            cwd: process.cwd(),
-          }, null, 2));
+          await fs.writeFile(
+            '/tmp/remember-write-target-last.json',
+            JSON.stringify(
+              {
+                timestamp: new Date().toISOString(),
+                pluginRoot,
+                memoryFile,
+                note,
+                noteLength: note.length,
+                cwd: process.cwd(),
+              },
+              null,
+              2,
+            ),
+          );
         } catch {}
-        await fs.writeFile(memoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
-          const current = existing.trim() ? existing : '# Fallback Memory Mirror\n';
-          await fs.writeFile(memoryFile, `${current}${line}\n`);
-        });
+        await fs
+          .writeFile(memoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any)
+          .catch(async () => {
+            const current = existing.trim() ? existing : '# Fallback Memory Mirror\n';
+            await fs.writeFile(memoryFile, `${current}${line}\n`);
+          });
         return { text: `Remembered: ${note}` };
       } catch (error: any) {
         return { text: `Could not save memory: ${String(error?.message ?? error)}` };
@@ -423,10 +460,12 @@ export default function register(api: any) {
           return { text: 'That memory is already saved.' };
         }
         const header = existing.trim() ? '\n' : '# Long-term Memory\n';
-        await fs.writeFile(workspaceMemoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
-          const current = existing.trim() ? existing : '# Long-term Memory\n';
-          await fs.writeFile(workspaceMemoryFile, `${current}${line}\n`);
-        });
+        await fs
+          .writeFile(workspaceMemoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any)
+          .catch(async () => {
+            const current = existing.trim() ? existing : '# Long-term Memory\n';
+            await fs.writeFile(workspaceMemoryFile, `${current}${line}\n`);
+          });
         return { text: 'Saved to MEMORY.md.' };
       } catch (error: any) {
         return { text: `Could not save memory: ${String(error?.message ?? error)}` };
@@ -560,14 +599,51 @@ export default function register(api: any) {
       });
 
       try {
-        const budget = Number.isFinite(params?.tokenBudget) ? Math.max(256, Math.floor(params.tokenBudget)) : 4096;
+        const budget = Number.isFinite(params?.tokenBudget)
+          ? Math.max(256, Math.floor(params.tokenBudget))
+          : 4096;
         const freshTailCount = 20;
+        api.logger?.info?.(
+          '[cognitiverag-memory] assemble input ' +
+            JSON.stringify({
+              sessionId,
+              sessionKey: params?.sessionKey ?? null,
+              inputMessagesCount: inputMessages.length,
+              tokenBudget: budget,
+              chosenFreshTailCount: freshTailCount,
+            }),
+        );
 
         const assemblyRes = await postJson('/session_assemble_context', {
           session_id: sessionId,
           fresh_tail_count: freshTailCount,
           budget,
         });
+        api.logger?.info?.(
+          '[cognitiverag-memory] assemble backend ' +
+            JSON.stringify({
+              sessionId,
+              sessionKey: params?.sessionKey ?? null,
+              assemblyStatus: assemblyRes?.status ?? null,
+              bodyKeys:
+                assemblyRes?.body && typeof assemblyRes.body === 'object'
+                  ? Object.keys(assemblyRes.body)
+                  : [],
+              hasContextBlock: !!assemblyRes?.body?.context_block,
+              exactItemsCount: Array.isArray(assemblyRes?.body?.context_block?.exact_items)
+                ? assemblyRes.body.context_block.exact_items.length
+                : 0,
+              derivedItemsCount: Array.isArray(assemblyRes?.body?.context_block?.derived_items)
+                ? assemblyRes.body.context_block.derived_items.length
+                : 0,
+              freshTailCountReturned: Array.isArray(assemblyRes?.body?.fresh_tail)
+                ? assemblyRes.body.fresh_tail.length
+                : 0,
+              summariesCountReturned: Array.isArray(assemblyRes?.body?.summaries)
+                ? assemblyRes.body.summaries.length
+                : 0,
+            }),
+        );
 
         const freshTail = Array.isArray(assemblyRes?.body?.fresh_tail) ? assemblyRes.body.fresh_tail : [];
         const summaries = Array.isArray(assemblyRes?.body?.summaries) ? assemblyRes.body.summaries : [];
@@ -642,15 +718,28 @@ export default function register(api: any) {
         const summaryText = summaryItems.join('\n- ');
         const systemPromptAddition = structuredContextMessages.length
           ? undefined
-          : (summaryText
-              ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
-              : undefined);
+          : summaryText
+            ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
+            : undefined;
         const estimatedTokens = Math.max(
           0,
           messages.reduce((n: number, m: any) => n + Math.ceil(String(m?.content ?? '').length / 4), 0) +
             Math.ceil((systemPromptAddition ?? '').length / 4),
         );
         const totalTokens = estimatedTokens;
+
+        api.logger?.info?.(
+          '[cognitiverag-memory] assemble shaped ' +
+            JSON.stringify({
+              sessionId,
+              sessionKey: params?.sessionKey ?? null,
+              shapedMessagesCount: Array.isArray(messages) ? messages.length : 0,
+              hasSystemPromptAddition: !!systemPromptAddition,
+              systemPromptAdditionChars: (systemPromptAddition ?? '').length,
+              shapedEstimatedTokens: estimatedTokens ?? null,
+              shapedTotalTokens: totalTokens ?? null,
+            }),
+        );
 
         api.logger?.info?.(
           `[cognitiverag-memory] assemble forwarded ${JSON.stringify({
@@ -680,6 +769,14 @@ export default function register(api: any) {
             sessionId,
             error: String(error?.message ?? error),
           })}`,
+        );
+        api.logger?.warn?.(
+          '[cognitiverag-memory] assemble error ' +
+            JSON.stringify({
+              sessionId,
+              sessionKey: params?.sessionKey ?? null,
+              error: String(error?.message ?? error),
+            }),
         );
         await markFail(error);
         return {
@@ -735,21 +832,23 @@ export default function register(api: any) {
     } catch (e: any) {
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json; charset=utf-8');
-      res.end(JSON.stringify({
-        pluginLoaded: true,
-        contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
-        backendReachable: false,
-        mode: 'offline',
-        lastSuccessAt: null,
-        lastFailAt: new Date().toISOString(),
-        lastError: String(e?.message ?? e),
-        consecutiveFailures: 0,
-        fallbackMemoryMirrorActive: false,
-        rollbackRecommended: false,
-        rollbackReason: String(e?.message ?? e),
-        rollbackReady: true,
-        lastRollbackAt: null,
-      }));
+      res.end(
+        JSON.stringify({
+          pluginLoaded: true,
+          contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
+          backendReachable: false,
+          mode: 'offline',
+          lastSuccessAt: null,
+          lastFailAt: new Date().toISOString(),
+          lastError: String(e?.message ?? e),
+          consecutiveFailures: 0,
+          fallbackMemoryMirrorActive: false,
+          rollbackRecommended: false,
+          rollbackReason: String(e?.message ?? e),
+          rollbackReady: true,
+          lastRollbackAt: null,
+        }),
+      );
       return true;
     }
   };
@@ -767,5 +866,4 @@ export default function register(api: any) {
     match: 'exact',
     handler: respondHealthJson,
   });
-
 }
