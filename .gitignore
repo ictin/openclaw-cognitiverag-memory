@@ -1,0 +1,5 @@
+
+# cleanup artifacts
+*.bak
+*.manual-backup*
+codex_write_test.txt
