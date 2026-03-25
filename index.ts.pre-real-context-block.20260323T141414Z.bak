@@ -1,144 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import fsSync from 'node:fs';
 
 const COG_RAG_BASE = 'http://127.0.0.1:8000';
-
-type AssembleShapeResult = {
-  messages: any[];
-  systemPromptAddition?: string;
-  estimatedTokens: number;
-  totalTokens: number;
-};
-
-type EngineAssembleResult = {
-  messages: any[];
-  estimatedTokens: number;
-  totalTokens: number;
-  systemPromptAddition?: string;
-};
-
-export function shapeAssembleResponse(assemblyRes: any, budget = 4096): AssembleShapeResult {
-  const freshTail = Array.isArray(assemblyRes?.body?.fresh_tail) ? assemblyRes.body.fresh_tail : [];
-  const summaries = Array.isArray(assemblyRes?.body?.summaries) ? assemblyRes.body.summaries : [];
-  const contextBlock = assemblyRes?.body?.context_block ?? null;
-
-  const exactContextItems = Array.isArray(contextBlock?.exact_items) ? contextBlock.exact_items : [];
-  const derivedContextItems = Array.isArray(contextBlock?.derived_items) ? contextBlock.derived_items : [];
-  const contextProvenance = contextBlock?.provenance ?? null;
-
-  const structuredContextMessages = [
-    ...exactContextItems.map((item: any) => ({
-      role: 'user',
-      content: String(item?.content ?? item?.summary ?? item?.text ?? ''),
-      metadata: {
-        item_type: item?.item_type ?? 'exact_item',
-        exactness: item?.exactness ?? 'exact',
-        summarizable: item?.summarizable ?? false,
-        provenance: item?.provenance ?? contextProvenance ?? null,
-      },
-    })),
-    ...derivedContextItems.map((item: any) => ({
-      role: 'system',
-      content: String(item?.summary ?? item?.content ?? item?.text ?? ''),
-      metadata: {
-        item_type: item?.item_type ?? 'derived_item',
-        exactness: item?.exactness ?? 'derived',
-        summarizable: item?.summarizable ?? true,
-        provenance: item?.provenance ?? contextProvenance ?? null,
-      },
-    })),
-  ].filter((m: any) => String(m?.content ?? '').trim());
-
-  const messages = structuredContextMessages.length
-    ? structuredContextMessages
-    : freshTail
-        .map((m: any) => {
-          const sender = String(m?.sender ?? 'user');
-          const text = String(m?.text ?? '');
-          if (!text) return null;
-          return {
-            role: sender === 'assistant' ? 'assistant' : 'user',
-            content: text,
-          };
-        })
-        .filter(Boolean);
-
-  const rawSummaryItems = structuredContextMessages.length
-    ? []
-    : summaries
-        .map((s: any) => String(s?.summary ?? '').trim())
-        .filter(Boolean)
-        .slice(0, 8);
-
-  const maxSummaryTokens = Math.min(512, Math.max(96, Math.floor(budget * 0.25)));
-  const maxSummaryChars = maxSummaryTokens * 4;
-  const summaryItems: string[] = [];
-  let usedChars = 0;
-  for (const item of rawSummaryItems) {
-    const prefixChars = summaryItems.length === 0 ? 0 : 3;
-    if (usedChars + prefixChars + item.length <= maxSummaryChars) {
-      summaryItems.push(item);
-      usedChars += prefixChars + item.length;
-      continue;
-    }
-    const remaining = maxSummaryChars - usedChars - prefixChars;
-    if (remaining > 24) {
-      summaryItems.push(item.slice(0, remaining - 1) + '…');
-    }
-    break;
-  }
-
-  const summaryText = summaryItems.join('\n- ');
-  const systemPromptAddition = structuredContextMessages.length
-    ? undefined
-    : summaryText
-      ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
-      : undefined;
-
-  const estimatedTokens = Math.max(
-    0,
-    messages.reduce((n: number, m: any) => n + Math.ceil(String(m?.content ?? '').length / 4), 0) +
-      Math.ceil((systemPromptAddition ?? '').length / 4),
-  );
-  const totalTokens = estimatedTokens;
-
-  return { messages, systemPromptAddition, estimatedTokens, totalTokens };
-}
-
-export function toEngineAssembleResult(shaped: AssembleShapeResult): EngineAssembleResult {
-  return {
-    messages: Array.isArray(shaped?.messages)
-      ? shaped.messages
-          .map((message: any) => {
-            const role = String(message?.role ?? 'user');
-            const content = String(message?.content ?? '');
-            if (!content.trim()) return null;
-            return {
-              ...message,
-              role: role === 'assistant' || role === 'system' ? role : 'user',
-              content,
-            };
-          })
-          .filter(Boolean)
-      : [],
-    estimatedTokens: Number.isFinite(shaped?.estimatedTokens) ? Math.max(0, shaped.estimatedTokens) : 0,
-    totalTokens: Number.isFinite(shaped?.totalTokens)
-      ? Math.max(0, shaped.totalTokens)
-      : Number.isFinite(shaped?.estimatedTokens)
-        ? Math.max(0, shaped.estimatedTokens)
-        : 0,
-    ...(typeof shaped?.systemPromptAddition === 'string' && shaped.systemPromptAddition.trim()
-      ? { systemPromptAddition: shaped.systemPromptAddition }
-      : {}),
-  };
-}
 
 type PluginMode = 'summary_only' | 'summary_plus_retrieved_facts' | 'full_external_tail';
 const DEFAULT_PLUGIN_MODE: PluginMode = 'summary_only';
 
-type HealthMode = 'healthy' | 'degraded' | 'offline' | 'unknown' | 'rolled_back';
+type HealthMode = 'healthy' | 'degraded' | 'offline' | 'unknown';
 type HealthState = {
   backendReachable: boolean;
   mode: HealthMode;
@@ -197,6 +65,7 @@ async function postJson(path: string, body: any, timeoutMs = 3000) {
 }
 
 export default function register(api: any) {
+  const path = require('node:path');
   const pluginRoot = path.resolve(path.dirname(api?.source ?? api?.path ?? path.resolve('.')));
   const healthFile = path.join(pluginRoot, 'crag-health-state.json');
   const memoryFile = path.join(pluginRoot, 'MEMORY.md');
@@ -212,6 +81,7 @@ export default function register(api: any) {
       pluginRootCandidate: pluginRoot,
       healthFileCandidate: healthFile,
     });
+    const fsSync = require('node:fs');
     const diagPath = '/tmp/cognitiverag-plugin-bootstrap-diagnostic.json';
     const diag = {
       timestamp: new Date().toISOString(),
@@ -226,14 +96,10 @@ export default function register(api: any) {
       pluginRootExists: fsSync.existsSync(pluginRoot),
       healthDirExists: fsSync.existsSync(path.dirname(healthFile)),
     };
-    try {
-      fsSync.writeFileSync(diagPath, JSON.stringify(diag, null, 2));
-    } catch {}
+    try { fsSync.writeFileSync(diagPath, JSON.stringify(diag, null, 2)); } catch {}
     const dir = healthFile.includes('/') ? healthFile.slice(0, healthFile.lastIndexOf('/')) : '.';
     if (dir) {
-      try {
-        fsSync.mkdirSync(dir, { recursive: true });
-      } catch {}
+      try { fsSync.mkdirSync(dir, { recursive: true }); } catch {}
     }
     if (!fsSync.existsSync(healthFile)) {
       const initialState = {
@@ -341,32 +207,73 @@ export default function register(api: any) {
 
   const probeBackend = async () => {
     try {
-      const probe = await postJson(
-        '/session_assemble_context',
-        {
-          session_id: '__crag_probe__',
-          fresh_tail_count: 0,
-          budget: 256,
-        },
-        1500,
-      );
+      const probe = await postJson('/session_assemble_context', {
+        session_id: '__crag_probe__',
+        fresh_tail_count: 0,
+        budget: 256,
+      }, 1500);
       if (probe.status >= 200 && probe.status < 300) {
         const state = await markSuccess();
         return { ok: true, state, backendReachable: true, mode: 'healthy' as const };
       }
       const state = await markFail(`probe_status_${probe.status}`);
-      return {
-        ok: false,
-        state,
-        backendReachable: false,
-        mode: state?.mode ?? 'degraded',
-        reason: `HTTP ${probe.status}`,
-      };
+      return { ok: false, state, backendReachable: false, mode: state?.mode ?? 'degraded', reason: `HTTP ${probe.status}` };
     } catch (e) {
       const state = await markFail(e);
       return { ok: false, state, reason: String((e as any)?.message ?? e) };
     }
   };
+
+  api.registerHttpRoute?.({
+    path: '/cognitiverag-memory/status',
+    auth: 'gateway',
+    match: 'exact',
+    handler: async (_req: IncomingMessage, res: ServerResponse) => {
+      try {
+        const prior = await readHealthState();
+        const probe = await probeBackend();
+        const current = probe?.state ?? prior;
+        const payload = {
+          pluginLoaded: true,
+          contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
+          backendReachable: !!current?.backendReachable,
+          mode: current?.mode ?? 'unknown',
+          lastSuccessAt: current?.lastSuccessAt ?? null,
+          lastFailAt: current?.lastFailAt ?? null,
+          lastError: current?.lastError ?? null,
+          consecutiveFailures: Number(current?.consecutiveFailures ?? 0),
+          fallbackMemoryMirrorActive: !!current?.fallbackMemoryMirrorActive,
+          rollbackRecommended: !!current?.rollbackRecommended,
+          rollbackReason: current?.rollbackReason ?? null,
+          rollbackReady: !!current?.rollbackReady,
+          lastRollbackAt: current?.lastRollbackAt ?? null,
+        };
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify(payload));
+        return true;
+      } catch (e: any) {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({
+          pluginLoaded: true,
+          contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
+          backendReachable: false,
+          mode: 'offline',
+          lastSuccessAt: null,
+          lastFailAt: new Date().toISOString(),
+          lastError: String(e?.message ?? e),
+          consecutiveFailures: 0,
+          fallbackMemoryMirrorActive: false,
+          rollbackRecommended: false,
+          rollbackReason: String(e?.message ?? e),
+          rollbackReady: true,
+          lastRollbackAt: null,
+        }));
+        return true;
+      }
+    },
+  });
 
   api.registerCommand?.({
     name: 'remember',
@@ -375,18 +282,7 @@ export default function register(api: any) {
     requireAuth: true,
     handler: async (ctx: any) => {
       try {
-        const note = Array.isArray(ctx?.args)
-          ? ctx.args.join(' ').trim()
-          : String(
-              ctx?.args?.text ??
-                ctx?.args?.message ??
-                ctx?.args?.value ??
-                ctx?.text ??
-                ctx?.message ??
-                ctx?.value ??
-                ctx?.args ??
-                '',
-            ).trim();
+        const note = Array.isArray(ctx?.args) ? ctx.args.join(' ').trim() : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.text ?? ctx?.message ?? ctx?.value ?? ctx?.args ?? '').trim();
         if (!note) return { text: 'Usage: /remember <durable fact or preference>' };
         const line = `- ${note}`;
         const existing = await fs.readFile(memoryFile, 'utf8').catch(() => '');
@@ -395,28 +291,19 @@ export default function register(api: any) {
         }
         const header = existing.trim() ? '\n' : '# Fallback Memory Mirror\n';
         try {
-          await fs.writeFile(
-            '/tmp/remember-write-target-last.json',
-            JSON.stringify(
-              {
-                timestamp: new Date().toISOString(),
-                pluginRoot,
-                memoryFile,
-                note,
-                noteLength: note.length,
-                cwd: process.cwd(),
-              },
-              null,
-              2,
-            ),
-          );
+          await fs.writeFile('/tmp/remember-write-target-last.json', JSON.stringify({
+            timestamp: new Date().toISOString(),
+            pluginRoot,
+            memoryFile,
+            note,
+            noteLength: note.length,
+            cwd: process.cwd(),
+          }, null, 2));
         } catch {}
-        await fs
-          .writeFile(memoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any)
-          .catch(async () => {
-            const current = existing.trim() ? existing : '# Fallback Memory Mirror\n';
-            await fs.writeFile(memoryFile, `${current}${line}\n`);
-          });
+        await fs.writeFile(memoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
+          const current = existing.trim() ? existing : '# Fallback Memory Mirror\n';
+          await fs.writeFile(memoryFile, `${current}${line}\n`);
+        });
         return { text: `Remembered: ${note}` };
       } catch (error: any) {
         return { text: `Could not save memory: ${String(error?.message ?? error)}` };
@@ -442,12 +329,10 @@ export default function register(api: any) {
           return { text: 'That memory is already saved.' };
         }
         const header = existing.trim() ? '\n' : '# Long-term Memory\n';
-        await fs
-          .writeFile(workspaceMemoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any)
-          .catch(async () => {
-            const current = existing.trim() ? existing : '# Long-term Memory\n';
-            await fs.writeFile(workspaceMemoryFile, `${current}${line}\n`);
-          });
+        await fs.writeFile(workspaceMemoryFile, `${header}${line}\n`, { flag: existing ? 'a' : 'w' } as any).catch(async () => {
+          const current = existing.trim() ? existing : '# Long-term Memory\n';
+          await fs.writeFile(workspaceMemoryFile, `${current}${line}\n`);
+        });
         return { text: 'Saved to MEMORY.md.' };
       } catch (error: any) {
         return { text: `Could not save memory: ${String(error?.message ?? error)}` };
@@ -581,74 +466,74 @@ export default function register(api: any) {
       });
 
       try {
-        const budget = Number.isFinite(params?.tokenBudget)
-          ? Math.max(256, Math.floor(params.tokenBudget))
-          : 4096;
+        const budget = Number.isFinite(params?.tokenBudget) ? Math.max(256, Math.floor(params.tokenBudget)) : 4096;
         const freshTailCount = 20;
-        api.logger?.info?.(
-          '[cognitiverag-memory] assemble input ' +
-            JSON.stringify({
-              sessionId,
-              sessionKey: params?.sessionKey ?? null,
-              inputMessagesCount: inputMessages.length,
-              tokenBudget: budget,
-              chosenFreshTailCount: freshTailCount,
-            }),
-        );
 
         const assemblyRes = await postJson('/session_assemble_context', {
           session_id: sessionId,
           fresh_tail_count: freshTailCount,
           budget,
         });
-        api.logger?.info?.(
-          '[cognitiverag-memory] assemble backend ' +
-            JSON.stringify({
-              sessionId,
-              sessionKey: params?.sessionKey ?? null,
-              assemblyStatus: assemblyRes?.status ?? null,
-              bodyKeys:
-                assemblyRes?.body && typeof assemblyRes.body === 'object'
-                  ? Object.keys(assemblyRes.body)
-                  : [],
-              hasContextBlock: !!assemblyRes?.body?.context_block,
-              exactItemsCount: Array.isArray(assemblyRes?.body?.context_block?.exact_items)
-                ? assemblyRes.body.context_block.exact_items.length
-                : 0,
-              derivedItemsCount: Array.isArray(assemblyRes?.body?.context_block?.derived_items)
-                ? assemblyRes.body.context_block.derived_items.length
-                : 0,
-              freshTailCountReturned: Array.isArray(assemblyRes?.body?.fresh_tail)
-                ? assemblyRes.body.fresh_tail.length
-                : 0,
-              summariesCountReturned: Array.isArray(assemblyRes?.body?.summaries)
-                ? assemblyRes.body.summaries.length
-                : 0,
-            }),
-        );
 
-        const shaped = shapeAssembleResponse(assemblyRes, budget);
-        const { messages, systemPromptAddition, estimatedTokens, totalTokens } = shaped;
+        const freshTail = Array.isArray(assemblyRes?.body?.fresh_tail) ? assemblyRes.body.fresh_tail : [];
+        const summaries = Array.isArray(assemblyRes?.body?.summaries) ? assemblyRes.body.summaries : [];
 
-        api.logger?.info?.(
-          '[cognitiverag-memory] assemble shaped ' +
-            JSON.stringify({
-              sessionId,
-              sessionKey: params?.sessionKey ?? null,
-              shapedMessagesCount: Array.isArray(messages) ? messages.length : 0,
-              hasSystemPromptAddition: !!systemPromptAddition,
-              systemPromptAdditionChars: (systemPromptAddition ?? '').length,
-              shapedEstimatedTokens: estimatedTokens ?? null,
-              shapedTotalTokens: totalTokens ?? null,
-            }),
+        const messages = freshTail
+          .map((m: any) => {
+            const sender = String(m?.sender ?? 'user');
+            const text = String(m?.text ?? '');
+            if (!text) return null;
+            return {
+              role: sender === 'assistant' ? 'assistant' : 'user',
+              content: text,
+            };
+          })
+          .filter(Boolean);
+
+        const rawSummaryItems = summaries
+          .map((s: any) => String(s?.summary ?? '').trim())
+          .filter(Boolean)
+          .slice(0, 8);
+
+        const maxSummaryTokens = Math.min(512, Math.max(96, Math.floor(budget * 0.25)));
+        const maxSummaryChars = maxSummaryTokens * 4;
+        const summaryItems: string[] = [];
+        let usedChars = 0;
+        for (const item of rawSummaryItems) {
+          const prefixChars = summaryItems.length === 0 ? 0 : 3; // '\n- '
+          if (usedChars + prefixChars + item.length <= maxSummaryChars) {
+            summaryItems.push(item);
+            usedChars += prefixChars + item.length;
+            continue;
+          }
+          const remaining = maxSummaryChars - usedChars - prefixChars;
+          if (remaining > 24) {
+            summaryItems.push(item.slice(0, remaining - 1) + '…');
+          }
+          break;
+        }
+
+        const summaryText = summaryItems.join('\n- ');
+        const systemPromptAddition = summaryText
+          ? `Memory summary (older context; use as background, prefer fresh tail for exact wording):\n- ${summaryText}`
+          : undefined;
+
+        const estimatedTokens = Math.max(
+          0,
+          messages.reduce((n: number, m: any) => n + Math.ceil(String(m?.content ?? '').length / 4), 0) +
+            Math.ceil((systemPromptAddition ?? '').length / 4),
         );
+        const totalTokens = estimatedTokens;
 
         api.logger?.info?.(
           `[cognitiverag-memory] assemble forwarded ${JSON.stringify({
             sessionId,
             status: assemblyRes.status,
-            freshTail: Array.isArray(assemblyRes?.body?.fresh_tail) ? assemblyRes.body.fresh_tail.length : 0,
-            summaries: Array.isArray(assemblyRes?.body?.summaries) ? assemblyRes.body.summaries.length : 0,
+            freshTail: freshTail.length,
+            summaries: summaries.length,
+            summaryItemsUsed: summaryItems.length,
+            maxSummaryTokens,
+            maxSummaryChars,
             systemPromptAdditionChars: (systemPromptAddition ?? '').length,
             messages: messages.length,
             estimatedTokens,
@@ -659,7 +544,12 @@ export default function register(api: any) {
         if (assemblyRes.status >= 200 && assemblyRes.status < 300) await markSuccess();
         else await markFail(`assemble_status_${assemblyRes.status}`);
 
-        return toEngineAssembleResult(shaped);
+        return {
+          messages,
+          estimatedTokens,
+          totalTokens,
+          ...(systemPromptAddition ? { systemPromptAddition } : {}),
+        };
       } catch (error: any) {
         api.logger?.warn?.(
           `[cognitiverag-memory] assemble forward failed ${JSON.stringify({
@@ -667,20 +557,12 @@ export default function register(api: any) {
             error: String(error?.message ?? error),
           })}`,
         );
-        api.logger?.warn?.(
-          '[cognitiverag-memory] assemble error ' +
-            JSON.stringify({
-              sessionId,
-              sessionKey: params?.sessionKey ?? null,
-              error: String(error?.message ?? error),
-            }),
-        );
         await markFail(error);
-        return toEngineAssembleResult({
+        return {
           messages: inputMessages,
           estimatedTokens: 0,
           totalTokens: 0,
-        });
+        };
       }
     },
 
@@ -729,23 +611,21 @@ export default function register(api: any) {
     } catch (e: any) {
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json; charset=utf-8');
-      res.end(
-        JSON.stringify({
-          pluginLoaded: true,
-          contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
-          backendReachable: false,
-          mode: 'offline',
-          lastSuccessAt: null,
-          lastFailAt: new Date().toISOString(),
-          lastError: String(e?.message ?? e),
-          consecutiveFailures: 0,
-          fallbackMemoryMirrorActive: false,
-          rollbackRecommended: false,
-          rollbackReason: String(e?.message ?? e),
-          rollbackReady: true,
-          lastRollbackAt: null,
-        }),
-      );
+      res.end(JSON.stringify({
+        pluginLoaded: true,
+        contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
+        backendReachable: false,
+        mode: 'offline',
+        lastSuccessAt: null,
+        lastFailAt: new Date().toISOString(),
+        lastError: String(e?.message ?? e),
+        consecutiveFailures: 0,
+        fallbackMemoryMirrorActive: false,
+        rollbackRecommended: false,
+        rollbackReason: String(e?.message ?? e),
+        rollbackReady: true,
+        lastRollbackAt: null,
+      }));
       return true;
     }
   };
@@ -763,4 +643,5 @@ export default function register(api: any) {
     match: 'exact',
     handler: respondHealthJson,
   });
+
 }

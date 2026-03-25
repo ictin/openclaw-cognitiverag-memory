@@ -51,7 +51,8 @@ for (const c of cases) {
   assert.equal(typeof result, "object", c.name);
   assert.ok(Array.isArray(result.messages), c.name);
   assert.ok(Number.isFinite(result.estimatedTokens), c.name);
-  assert.ok(Number.isFinite(result.totalTokens), c.name);
+  assert.equal(Number.isFinite(result.totalTokens), true, c.name);
+  assert.ok(result.totalTokens >= result.estimatedTokens, c.name);
 }
 
 if (originalFetch) globalThis.fetch = originalFetch;

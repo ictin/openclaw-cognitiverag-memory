@@ -67,7 +67,8 @@ assert.equal(structured.messages.length, 2);
 assert.equal(structured.messages[0].metadata.provenance, "ctx-provenance");
 assert.equal(structured.systemPromptAddition, undefined);
 assert.ok(Number.isFinite(structured.estimatedTokens));
-assert.ok(Number.isFinite(structured.totalTokens));
+assert.equal(Number.isFinite(structured.totalTokens), true);
+assert.ok(structured.totalTokens >= structured.estimatedTokens);
 
 const fallback = await engine.assemble({ sessionId: "s2", sessionKey: "k2", tokenBudget: 1024, messages: [] });
 assert.equal(fetchCalls.length, 2);
@@ -78,7 +79,8 @@ assert.deepEqual(fallback.messages, [
 ]);
 assert.match(fallback.systemPromptAddition, /old summary/);
 assert.ok(Number.isFinite(fallback.estimatedTokens));
-assert.ok(Number.isFinite(fallback.totalTokens));
+assert.equal(Number.isFinite(fallback.totalTokens), true);
+assert.ok(fallback.totalTokens >= fallback.estimatedTokens);
 
 const empty = shapeAssembleResponse(makeResponse({ fresh_tail: [], summaries: [] }), 512);
 assert.deepEqual(empty.messages, []);

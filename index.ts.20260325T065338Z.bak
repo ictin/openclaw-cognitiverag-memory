@@ -124,11 +124,7 @@ export function toEngineAssembleResult(shaped: AssembleShapeResult): EngineAssem
           .filter(Boolean)
       : [],
     estimatedTokens: Number.isFinite(shaped?.estimatedTokens) ? Math.max(0, shaped.estimatedTokens) : 0,
-    totalTokens: Number.isFinite(shaped?.totalTokens)
-      ? Math.max(0, shaped.totalTokens)
-      : Number.isFinite(shaped?.estimatedTokens)
-        ? Math.max(0, shaped.estimatedTokens)
-        : 0,
+    totalTokens: Number.isFinite(shaped?.totalTokens) ? Math.max(0, shaped.totalTokens) : 0,
     ...(typeof shaped?.systemPromptAddition === 'string' && shaped.systemPromptAddition.trim()
       ? { systemPromptAddition: shaped.systemPromptAddition }
       : {}),
