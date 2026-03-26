@@ -45,12 +45,23 @@ function assertSafeAssembleBoundary(result) {
   assert.ok(result.source && typeof result.source === 'object', 'source object must be present');
   assert.ok(Number.isFinite(result.source.totalTokens), 'source.totalTokens must be finite');
   assert.ok(Number.isFinite(result.source.estimatedTokens), 'source.estimatedTokens must be finite');
+  for (const message of result.messages) {
+    assert.ok(message && typeof message === 'object', 'each message must be an object');
+    assert.ok(message.source && typeof message.source === 'object', 'message.source must be present');
+    assert.ok(Number.isFinite(message.source.totalTokens), 'message.source.totalTokens must be finite');
+    assert.ok(message.usage && typeof message.usage === 'object', 'message.usage must be present');
+    assert.ok(Number.isFinite(message.usage.totalTokens), 'message.usage.totalTokens must be finite');
+  }
 }
 
 function hostReadsTotalsLikeAggregator(result) {
   // Regression guard for live failure class:
   // Cannot read properties of undefined (reading 'totalTokens')
-  return result.source.totalTokens + result.usage.totalTokens + result.totalTokens;
+  const perMessage = result.messages.reduce(
+    (sum, message) => sum + message.source.totalTokens + message.usage.totalTokens,
+    0,
+  );
+  return result.source.totalTokens + result.usage.totalTokens + result.totalTokens + perMessage;
 }
 
 const engine = makeEngine();

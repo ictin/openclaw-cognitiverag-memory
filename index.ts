@@ -122,10 +122,40 @@ export function toEngineAssembleResult(shaped: AssembleShapeResult): EngineAssem
           const role = String(message?.role ?? 'user');
           const content = String(message?.content ?? '');
           if (!content.trim()) return null;
+          const messageEstimatedTokens = Math.max(0, Math.ceil(content.length / 4));
+          const messageTotalTokens = Number.isFinite(message?.usage?.totalTokens)
+            ? Math.max(0, Number(message.usage.totalTokens))
+            : Number.isFinite(message?.source?.totalTokens)
+              ? Math.max(0, Number(message.source.totalTokens))
+              : messageEstimatedTokens;
           return {
             ...message,
             role: role === 'assistant' || role === 'system' ? role : 'user',
             content,
+            usage:
+              message?.usage && typeof message.usage === 'object'
+                ? {
+                    ...message.usage,
+                    totalTokens: Number.isFinite(message?.usage?.totalTokens)
+                      ? Math.max(0, Number(message.usage.totalTokens))
+                      : messageTotalTokens,
+                  }
+                : {
+                    totalTokens: messageTotalTokens,
+                    estimatedTokens: messageEstimatedTokens,
+                  },
+            source:
+              message?.source && typeof message.source === 'object'
+                ? {
+                    ...message.source,
+                    totalTokens: Number.isFinite(message?.source?.totalTokens)
+                      ? Math.max(0, Number(message.source.totalTokens))
+                      : messageTotalTokens,
+                  }
+                : {
+                    totalTokens: messageTotalTokens,
+                    estimatedTokens: messageEstimatedTokens,
+                  },
           };
         })
         .filter(Boolean)
