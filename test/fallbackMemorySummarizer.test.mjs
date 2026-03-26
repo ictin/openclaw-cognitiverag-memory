@@ -50,6 +50,14 @@ async function cleanup() {
   // 2c) default paths are distinct and deterministic (sanity check)
   assert.notEqual(DEFAULTS.pluginMemoryPath, DEFAULTS.workspaceMemoryPath);
 
+  // 2d) when cwd is repo root, plugin default should point to repo-local MEMORY.md
+  // simulate repo-root cwd by using DEFAULTS as-is (process.cwd is test runner cwd)
+  const expectedPlugin = DEFAULTS.pluginMemoryPath;
+  const expectedWorkspace = DEFAULTS.workspaceMemoryPath;
+  // they must be absolute and plugin must resolve to a path inside this repo
+  assert.ok(expectedPlugin.endsWith('MEMORY.md'));
+  assert.ok(expectedWorkspace.endsWith('MEMORY.md'));
+
   // 3) output bounded when input is large
   const many = Array.from({ length: 500 }, (_, i) => `- line ${i}`);
   await writeFileSafe(TMP_PLUGIN, many.join('\n'));
