@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import fsSync from 'node:fs';
+import { summarizeFallback } from './lib/fallbackMemorySummarizer.js';
 
 const COG_RAG_BASE = 'http://127.0.0.1:8000';
 
@@ -54,6 +55,36 @@ function toContentBlocks(content: unknown): Array<{ type: 'text'; text: string }
   const text = extractTextContent(content).trim();
   if (!text) return [];
   return [{ type: 'text', text }];
+}
+
+function extractDurableFactCandidate(rawText: string): string | null {
+  const text = String(rawText ?? '').trim();
+  if (!text) return null;
+
+  const linePatterns = [
+    /^(?:remember(?:\s+this)?(?:\s+exact)?(?:\s+durable)?(?:\s+fact)?(?:\s+for\s+later)?|remember)\s*:\s*(.+)$/i,
+    /^durable fact to remember exactly\s*:\s*(.+)$/i,
+  ];
+  const lines = text.split(/\r?\n/).map((line) => line.trim());
+  for (const line of lines) {
+    for (const re of linePatterns) {
+      const match = line.match(re);
+      if (!match) continue;
+      const candidate = String(match[1] ?? '').trim();
+      if (!candidate) continue;
+      return candidate.length > 500 ? candidate.slice(0, 500) : candidate;
+    }
+  }
+
+  const inlineMatch = text.match(
+    /remember(?:\s+this)?(?:\s+exact)?(?:\s+durable)?(?:\s+fact)?(?:\s+for\s+later)?\s*:\s*([^\n\r]+)/i,
+  );
+  if (inlineMatch?.[1]) {
+    const candidate = String(inlineMatch[1]).trim();
+    if (candidate) return candidate.length > 500 ? candidate.slice(0, 500) : candidate;
+  }
+
+  return null;
 }
 
 export function shapeAssembleResponse(assemblyRes: any, budget = 4096): AssembleShapeResult {
@@ -399,6 +430,30 @@ export default function register(api: any) {
     }
   };
 
+  const promoteDurableFactToMirror = async (rawText: string, source: string) => {
+    const candidate = extractDurableFactCandidate(rawText);
+    if (!candidate) return { promoted: false, reason: 'no_candidate' as const };
+    const res = await appendRememberEntry(candidate);
+    if (res?.ok) {
+      await writeHealthState({ fallbackMemoryMirrorActive: true });
+      api.logger?.info?.(
+        `[cognitiverag-memory] promoted durable fact to fallback mirror ${JSON.stringify({
+          source,
+          candidateChars: candidate.length,
+          duplicate: !!(res as any)?.duplicate,
+        })}`,
+      );
+      return { promoted: true, duplicate: !!(res as any)?.duplicate };
+    }
+    api.logger?.warn?.(
+      `[cognitiverag-memory] fallback mirror promotion skipped ${JSON.stringify({
+        source,
+        reason: (res as any)?.reason ?? 'unknown',
+      })}`,
+    );
+    return { promoted: false, reason: 'write_failed' as const };
+  };
+
   const markFail = async (err: unknown) => {
     const current = await readHealthState();
     const now = new Date().toISOString();
@@ -496,6 +551,7 @@ export default function register(api: any) {
             const current = existing.trim() ? existing : '# Fallback Memory Mirror\n';
             await fs.writeFile(memoryFile, `${current}${line}\n`);
           });
+        await writeHealthState({ fallbackMemoryMirrorActive: true });
         return { text: `Remembered: ${note}` };
       } catch (error: any) {
         return { text: `Could not save memory: ${String(error?.message ?? error)}` };
@@ -527,6 +583,7 @@ export default function register(api: any) {
             const current = existing.trim() ? existing : '# Long-term Memory\n';
             await fs.writeFile(workspaceMemoryFile, `${current}${line}\n`);
           });
+        await writeHealthState({ fallbackMemoryMirrorActive: true });
         return { text: 'Saved to MEMORY.md.' };
       } catch (error: any) {
         return { text: `Could not save memory: ${String(error?.message ?? error)}` };
@@ -640,8 +697,12 @@ export default function register(api: any) {
           })}`,
         );
 
-        if (ok) await markSuccess();
-        else await markFail('ingest_not_inserted');
+        if (ok) {
+          await markSuccess();
+          if (role === 'user' && text.trim()) {
+            await promoteDurableFactToMirror(text, 'ingest');
+          }
+        } else await markFail('ingest_not_inserted');
 
         return { ingested: ok };
       } catch (error: any) {
@@ -713,7 +774,33 @@ export default function register(api: any) {
         );
 
         const shaped = shapeAssembleResponse(assemblyRes, budget);
-        const { messages, systemPromptAddition, estimatedTokens, totalTokens } = shaped;
+        let { messages, systemPromptAddition, estimatedTokens, totalTokens } = shaped;
+        try {
+          const fallback = await summarizeFallback({
+            pluginMemoryPath: memoryFile,
+            workspaceMemoryPath: workspaceMemoryFile,
+            maxLines: 50,
+            maxSummaryChars: 768,
+            maxMessages: 8,
+          });
+          const fallbackSummary = String(fallback?.summary ?? '').trim();
+          if ((Number(fallback?.sourceCounts?.plugin ?? 0) > 0 || Number(fallback?.sourceCounts?.workspace ?? 0) > 0) && !systemPromptAddition) {
+            await writeHealthState({ fallbackMemoryMirrorActive: true });
+          }
+          if (fallbackSummary) {
+            const fallbackPrompt = `Fallback memory mirror (durable user-noted facts):\n${fallbackSummary}`;
+            systemPromptAddition = systemPromptAddition
+              ? `${systemPromptAddition}\n\n${fallbackPrompt}`
+              : fallbackPrompt;
+          }
+        } catch (e: any) {
+          api.logger?.warn?.(
+            `[cognitiverag-memory] fallback summarizer read failed ${JSON.stringify({
+              sessionId,
+              error: String(e?.message ?? e),
+            })}`,
+          );
+        }
 
         api.logger?.info?.(
           '[cognitiverag-memory] assemble shaped ' +
@@ -744,7 +831,10 @@ export default function register(api: any) {
         if (assemblyRes.status >= 200 && assemblyRes.status < 300) await markSuccess();
         else await markFail(`assemble_status_${assemblyRes.status}`);
 
-        return toEngineAssembleResult(shaped);
+        return toEngineAssembleResult({
+          ...shaped,
+          systemPromptAddition,
+        });
       } catch (error: any) {
         api.logger?.warn?.(
           `[cognitiverag-memory] assemble forward failed ${JSON.stringify({
