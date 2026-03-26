@@ -17,10 +17,10 @@ export type SummarizerResult = {
 
 // Defaults are deterministic and local-only. Exported for tests to verify.
 export const DEFAULTS: Required<SummarizerOptions> = {
-  // plugin-local path: inside this package folder
-  pluginMemoryPath: path.resolve(process.cwd(), 'openclaw-cognitiverag-memory', 'MEMORY.md'),
-  // workspaceMemoryPath should be the workspace root's MEMORY.md and must NOT equal pluginMemoryPath
-  workspaceMemoryPath: path.resolve(process.cwd(), '..', '..', 'MEMORY.md'),
+  // plugin-local path: repo-local MEMORY.md when cwd is repo root
+  pluginMemoryPath: path.resolve(process.cwd(), 'MEMORY.md'),
+  // workspaceMemoryPath: workspace root's MEMORY.md (parent of repo), distinct from pluginMemoryPath
+  workspaceMemoryPath: path.resolve(process.cwd(), '..', 'MEMORY.md'),
   maxLines: 50,
   maxSummaryChars: 1024,
   maxMessages: 10,
