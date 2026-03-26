@@ -16,8 +16,8 @@ export type SummarizerResult = {
 };
 
 const DEFAULTS: Required<SummarizerOptions> = {
-  pluginMemoryPath: path.resolve(process.cwd(), 'MEMORY.md'),
-  workspaceMemoryPath: path.resolve(process.cwd(), 'MEMORY.md'),
+  pluginMemoryPath: path.resolve(process.cwd(), 'openclaw-cognitiverag-memory', 'MEMORY.md'),
+  workspaceMemoryPath: path.resolve(process.cwd(), '..', 'MEMORY.md'),
   maxLines: 50,
   maxSummaryChars: 1024,
   maxMessages: 10,
