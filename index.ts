@@ -455,12 +455,18 @@ export default function register(api: any) {
     },
   });
 
+  // COMMAND: crag_status (read-only)
+  // Invariants:
+  // - runtime plugin must never create synthetic OpenClaw sessions or write transcripts
+  // - runtime plugin must never depend on transcript/session-store writes
+  // - status/health handlers must be read-only and must not trigger agent-lane executions
   api.registerCommand?.({
-    name: 'crag-status',
-    description: 'Show CognitiveRAG plugin/backend health and fallback status.',
+    name: 'crag_status',
+    description: 'Show CognitiveRAG plugin/backend health and fallback status (read-only).',
     acceptsArgs: false,
     requireAuth: true,
     handler: async () => {
+      // Read-only status: do not create any session/transcript or call any agent CLI.
       const prior = await readHealthState();
       const probe = await probeBackend();
       const current = probe?.state ?? prior;
