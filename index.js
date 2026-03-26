@@ -1,1 +1,0 @@
-export { name,version,private,type,main }
