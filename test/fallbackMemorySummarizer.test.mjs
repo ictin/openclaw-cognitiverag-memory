@@ -1,4 +1,4 @@
-import { summarizeFallback, buildMessagesFromLines, buildSummaryFromLines } from '../lib/fallbackMemorySummarizer.js';
+import { summarizeFallback, buildMessagesFromLines, buildSummaryFromLines, DEFAULTS } from '../lib/fallbackMemorySummarizer.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -38,14 +38,17 @@ async function cleanup() {
   assert(!a.summary.includes('- fact B\n- fact B'));
 
   // 2b) test two-source behavior and dedupe across sources
-  await writeFileSafe(TMP_PLUGIN, ['- shared', '- plugin-only'].join('\n'));
-  await writeFileSafe(TMP_WORKSPACE, ['- shared', '- workspace-only'].join('\n'));
+  await writeFileSafe(TMP_PLUGIN, ['shared','plugin-only'].join('\n'));
+  await writeFileSafe(TMP_WORKSPACE, ['shared','workspace-only'].join('\n'));
   const r = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 10, maxMessages: 10, maxSummaryChars: 500 });
   // shared should appear once
   assert.equal((r.summary.match(/- shared/g) || []).length, 1);
   // sourceCounts should reflect files read
   assert.equal(r.sourceCounts.plugin, 2);
   assert.equal(r.sourceCounts.workspace, 2);
+
+  // 2c) default paths are distinct and deterministic (sanity check)
+  assert.notEqual(DEFAULTS.pluginMemoryPath, DEFAULTS.workspaceMemoryPath);
 
   // 3) output bounded when input is large
   const many = Array.from({ length: 500 }, (_, i) => `- line ${i}`);
