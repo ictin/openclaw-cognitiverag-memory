@@ -9,9 +9,10 @@
     "test": "test"
   },
   "scripts": {
-    "test": "tsx test/assemble.test.mjs && tsx test/assemble_error.test.mjs && tsx test/registration.test.mjs && tsx test/registration_strict.test.mjs && tsx test/health_handlers_readonly.test.mjs && tsx test/fallbackMemorySummarizer.test.mjs",
-    "test:assemble": "tsx test/assemble.test.mjs && tsx test/assemble_error.test.mjs",
-    "test:registration": "tsx test/registration.test.mjs && tsx test/registration_strict.test.mjs && tsx test/health_handlers_readonly.test.mjs"
+    "test": "tsx test/assemble.test.mjs && tsx test/assemble_error.test.mjs && tsx test/assemble_regression.test.mjs && tsx test/registration.test.mjs && tsx test/registration_strict.test.mjs && tsx test/health_handlers_readonly.test.mjs && tsx test/fallbackMemorySummarizer.test.mjs",
+    "test:assemble": "tsx test/assemble.test.mjs && tsx test/assemble_error.test.mjs && tsx test/assemble_regression.test.mjs",
+    "test:registration": "tsx test/registration.test.mjs && tsx test/registration_strict.test.mjs && tsx test/health_handlers_readonly.test.mjs",
+    "test:regression": "tsx test/assemble_regression.test.mjs"
   },
   "repository": {
     "type": "git",

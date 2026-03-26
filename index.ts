@@ -16,6 +16,14 @@ type EngineAssembleResult = {
   messages: any[];
   estimatedTokens: number;
   totalTokens: number;
+  usage: {
+    estimatedTokens: number;
+    totalTokens: number;
+  };
+  source: {
+    estimatedTokens: number;
+    totalTokens: number;
+  };
   systemPromptAddition?: string;
 };
 
@@ -108,27 +116,38 @@ export function shapeAssembleResponse(assemblyRes: any, budget = 4096): Assemble
 }
 
 export function toEngineAssembleResult(shaped: AssembleShapeResult): EngineAssembleResult {
+  const messages = Array.isArray(shaped?.messages)
+    ? shaped.messages
+        .map((message: any) => {
+          const role = String(message?.role ?? 'user');
+          const content = String(message?.content ?? '');
+          if (!content.trim()) return null;
+          return {
+            ...message,
+            role: role === 'assistant' || role === 'system' ? role : 'user',
+            content,
+          };
+        })
+        .filter(Boolean)
+    : [];
+  const estimatedTokens = Number.isFinite(shaped?.estimatedTokens) ? Math.max(0, shaped.estimatedTokens) : 0;
+  const totalTokens = Number.isFinite(shaped?.totalTokens)
+    ? Math.max(0, shaped.totalTokens)
+    : Number.isFinite(shaped?.estimatedTokens)
+      ? Math.max(0, shaped.estimatedTokens)
+      : 0;
   return {
-    messages: Array.isArray(shaped?.messages)
-      ? shaped.messages
-          .map((message: any) => {
-            const role = String(message?.role ?? 'user');
-            const content = String(message?.content ?? '');
-            if (!content.trim()) return null;
-            return {
-              ...message,
-              role: role === 'assistant' || role === 'system' ? role : 'user',
-              content,
-            };
-          })
-          .filter(Boolean)
-      : [],
-    estimatedTokens: Number.isFinite(shaped?.estimatedTokens) ? Math.max(0, shaped.estimatedTokens) : 0,
-    totalTokens: Number.isFinite(shaped?.totalTokens)
-      ? Math.max(0, shaped.totalTokens)
-      : Number.isFinite(shaped?.estimatedTokens)
-        ? Math.max(0, shaped.estimatedTokens)
-        : 0,
+    messages,
+    estimatedTokens,
+    totalTokens,
+    usage: {
+      estimatedTokens,
+      totalTokens,
+    },
+    source: {
+      estimatedTokens,
+      totalTokens,
+    },
     ...(typeof shaped?.systemPromptAddition === 'string' && shaped.systemPromptAddition.trim()
       ? { systemPromptAddition: shaped.systemPromptAddition }
       : {}),
