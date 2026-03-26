@@ -3,5 +3,25 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "main": "index.ts"
+  "main": "index.ts",
+  "description": "Standalone OpenClaw adapter/plugin for CognitiveRAG integration.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "npm run test:assemble && npm run test:registration",
+    "test:assemble": "tsx test/assemble.test.mjs",
+    "test:registration": "tsx test/registration.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ictin/openclaw-cognitiverag-memory.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ictin/openclaw-cognitiverag-memory/issues"
+  },
+  "homepage": "https://github.com/ictin/openclaw-cognitiverag-memory#readme"
 }
