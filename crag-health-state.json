@@ -1,0 +1,14 @@
+{
+  "backendReachable": true,
+  "mode": "healthy",
+  "lastSuccessAt": "2026-03-26T13:12:51.270Z",
+  "lastFailAt": null,
+  "lastError": null,
+  "consecutiveFailures": 0,
+  "contextEngineSlot": "test",
+  "fallbackMemoryMirrorActive": false,
+  "rollbackRecommended": false,
+  "rollbackReason": null,
+  "rollbackReady": true,
+  "lastRollbackAt": null
+}
