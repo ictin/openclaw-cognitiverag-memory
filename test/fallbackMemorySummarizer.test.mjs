@@ -1,0 +1,55 @@
+import { summarizeFallback, buildMessagesFromLines, buildSummaryFromLines } from '../lib/fallbackMemorySummarizer.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+
+const TMP_PLUGIN = path.resolve('./test/tmp_plugin_MEMORY.md');
+const TMP_WORKSPACE = path.resolve('./test/tmp_workspace_MEMORY.md');
+
+async function writeFileSafe(p, content) {
+  await fs.mkdir(path.dirname(p), { recursive: true }).catch(() => {});
+  await fs.writeFile(p, content, 'utf8');
+}
+
+async function cleanup() {
+  await fs.rm(TMP_PLUGIN, { force: true }).catch(() => {});
+  await fs.rm(TMP_WORKSPACE, { force: true }).catch(() => {});
+}
+
+(async () => {
+  await cleanup();
+
+  // 1) empty inputs produce safe empty output
+  await writeFileSafe(TMP_PLUGIN, '');
+  await writeFileSafe(TMP_WORKSPACE, '');
+  const r1 = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 10, maxMessages: 5, maxSummaryChars: 200 });
+  assert.equal(r1.summary, '');
+  assert.deepEqual(r1.messages, []);
+
+  // 2) deterministic output for same input
+  const sample = ['- fact A', '- fact B', '- fact C', '- fact B', '- fact D'];
+  await writeFileSafe(TMP_PLUGIN, sample.join('\n'));
+  await writeFileSafe(TMP_WORKSPACE, '');
+  const a = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 10, maxMessages: 10, maxSummaryChars: 200 });
+  const b = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 10, maxMessages: 10, maxSummaryChars: 200 });
+  assert.equal(a.summary, b.summary);
+  assert.deepEqual(a.messages, b.messages);
+  // duplicates collapsed
+  assert(!a.summary.includes('- fact B\n- fact B'));
+
+  // 3) output bounded when input is large
+  const many = Array.from({ length: 500 }, (_, i) => `- line ${i}`);
+  await writeFileSafe(TMP_PLUGIN, many.join('\n'));
+  const r2 = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 50, maxMessages: 10, maxSummaryChars: 500 });
+  assert(r2.summary.length <= 500);
+  assert(r2.messages.length <= 10);
+
+  // 4) malformed/missing files do not throw
+  await cleanup();
+  const r3 = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 10, maxMessages: 5 });
+  assert.equal(r3.summary, '');
+  assert.deepEqual(r3.messages, []);
+
+  console.log('ALL TESTS PASSED');
+  process.exit(0);
+})().catch((e) => { console.error(e); process.exit(2); });
