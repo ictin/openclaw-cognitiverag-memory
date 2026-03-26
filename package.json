@@ -23,5 +23,8 @@
   "bugs": {
     "url": "https://github.com/ictin/openclaw-cognitiverag-memory/issues"
   },
-  "homepage": "https://github.com/ictin/openclaw-cognitiverag-memory#readme"
+  "homepage": "https://github.com/ictin/openclaw-cognitiverag-memory#readme",
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
 }
