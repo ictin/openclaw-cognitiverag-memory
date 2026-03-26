@@ -47,6 +47,7 @@ function assertSafeAssembleBoundary(result) {
   assert.ok(Number.isFinite(result.source.estimatedTokens), 'source.estimatedTokens must be finite');
   for (const message of result.messages) {
     assert.ok(message && typeof message === 'object', 'each message must be an object');
+    assert.ok(Array.isArray(message.content), 'message.content must be an array for host compatibility');
     assert.ok(message.source && typeof message.source === 'object', 'message.source must be present');
     assert.ok(Number.isFinite(message.source.totalTokens), 'message.source.totalTokens must be finite');
     assert.ok(message.usage && typeof message.usage === 'object', 'message.usage must be present');
@@ -64,19 +65,34 @@ function hostReadsTotalsLikeAggregator(result) {
   return result.source.totalTokens + result.usage.totalTokens + result.totalTokens + perMessage;
 }
 
+function hostReadsAssistantContentLikeRuntime(result) {
+  // Regression guard for live failure class:
+  // assistantMsg.content.flatMap is not a function
+  const assistantMsg = result.messages.find((message) => message.role === 'assistant');
+  if (!assistantMsg) return 0;
+  return assistantMsg.content.flatMap((part) => [String(part?.type ?? ''), String(part?.text ?? '')]).length;
+}
+
 const engine = makeEngine();
 assert.ok(engine && typeof engine.assemble === 'function', 'context engine assemble should be registered');
 
 // A1. Happy path
 {
   const restore = installFetchMock(async () =>
-    makeFetchResponse(200, { fresh_tail: [{ sender: 'user', text: 'hello' }], summaries: [{ summary: 'older' }] }),
+    makeFetchResponse(200, {
+      fresh_tail: [
+        { sender: 'user', text: 'hello' },
+        { sender: 'assistant', text: 'I remember your prior context.' },
+      ],
+      summaries: [{ summary: 'older' }],
+    }),
   );
   const result = await engine.assemble({ sessionId: 'a1', messages: [] });
   restore();
   assertSafeAssembleBoundary(result);
   assert.ok(result.messages.length > 0, 'happy path should provide messages');
   assert.doesNotThrow(() => hostReadsTotalsLikeAggregator(result));
+  assert.doesNotThrow(() => hostReadsAssistantContentLikeRuntime(result));
 }
 
 // A2. Empty backend body object
@@ -86,6 +102,7 @@ assert.ok(engine && typeof engine.assemble === 'function', 'context engine assem
   restore();
   assertSafeAssembleBoundary(result);
   assert.doesNotThrow(() => hostReadsTotalsLikeAggregator(result));
+  assert.doesNotThrow(() => hostReadsAssistantContentLikeRuntime(result));
 }
 
 // A3. Null backend body
@@ -95,6 +112,7 @@ assert.ok(engine && typeof engine.assemble === 'function', 'context engine assem
   restore();
   assertSafeAssembleBoundary(result);
   assert.doesNotThrow(() => hostReadsTotalsLikeAggregator(result));
+  assert.doesNotThrow(() => hostReadsAssistantContentLikeRuntime(result));
 }
 
 // A4/A5. Missing fields + malformed field types
@@ -106,6 +124,7 @@ assert.ok(engine && typeof engine.assemble === 'function', 'context engine assem
   restore();
   assertSafeAssembleBoundary(result);
   assert.doesNotThrow(() => hostReadsTotalsLikeAggregator(result));
+  assert.doesNotThrow(() => hostReadsAssistantContentLikeRuntime(result));
 }
 
 // A6. Backend fetch throw
@@ -117,6 +136,7 @@ assert.ok(engine && typeof engine.assemble === 'function', 'context engine assem
   restore();
   assertSafeAssembleBoundary(result);
   assert.doesNotThrow(() => hostReadsTotalsLikeAggregator(result));
+  assert.doesNotThrow(() => hostReadsAssistantContentLikeRuntime(result));
 }
 
 // A7/A8. Non-200 with missing usage-ish backend details
@@ -126,6 +146,7 @@ assert.ok(engine && typeof engine.assemble === 'function', 'context engine assem
   restore();
   assertSafeAssembleBoundary(result);
   assert.doesNotThrow(() => hostReadsTotalsLikeAggregator(result));
+  assert.doesNotThrow(() => hostReadsAssistantContentLikeRuntime(result));
 }
 
 // A9. Direct boundary adapter must never leak undefined totals
@@ -135,6 +156,7 @@ assert.ok(engine && typeof engine.assemble === 'function', 'context engine assem
   );
   assertSafeAssembleBoundary(adapted);
   assert.doesNotThrow(() => hostReadsTotalsLikeAggregator(adapted));
+  assert.doesNotThrow(() => hostReadsAssistantContentLikeRuntime(adapted));
 }
 
 // C. Multi-turn repeated use: deterministic safe shape across varied backend responses
@@ -166,6 +188,7 @@ assert.ok(engine && typeof engine.assemble === 'function', 'context engine assem
       'assemble result contains unexpected top-level keys',
     );
     assert.doesNotThrow(() => hostReadsTotalsLikeAggregator(result));
+    assert.doesNotThrow(() => hostReadsAssistantContentLikeRuntime(result));
   }
 
   restore();

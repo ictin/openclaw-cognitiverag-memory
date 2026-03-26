@@ -27,6 +27,35 @@ type EngineAssembleResult = {
   systemPromptAddition?: string;
 };
 
+function extractTextContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (!part || typeof part !== 'object') return '';
+        const typed = part as Record<string, unknown>;
+        if (typeof typed.text === 'string') return typed.text;
+        if (typeof typed.content === 'string') return typed.content;
+        return '';
+      })
+      .join('\n')
+      .trim();
+  }
+  if (content && typeof content === 'object') {
+    const typed = content as Record<string, unknown>;
+    if (typeof typed.text === 'string') return typed.text;
+    if (typeof typed.content === 'string') return typed.content;
+  }
+  return '';
+}
+
+function toContentBlocks(content: unknown): Array<{ type: 'text'; text: string }> {
+  const text = extractTextContent(content).trim();
+  if (!text) return [];
+  return [{ type: 'text', text }];
+}
+
 export function shapeAssembleResponse(assemblyRes: any, budget = 4096): AssembleShapeResult {
   const freshTail = Array.isArray(assemblyRes?.body?.fresh_tail) ? assemblyRes.body.fresh_tail : [];
   const summaries = Array.isArray(assemblyRes?.body?.summaries) ? assemblyRes.body.summaries : [];
@@ -39,7 +68,7 @@ export function shapeAssembleResponse(assemblyRes: any, budget = 4096): Assemble
   const structuredContextMessages = [
     ...exactContextItems.map((item: any) => ({
       role: 'user',
-      content: String(item?.content ?? item?.summary ?? item?.text ?? ''),
+      content: toContentBlocks(item?.content ?? item?.summary ?? item?.text ?? ''),
       metadata: {
         item_type: item?.item_type ?? 'exact_item',
         exactness: item?.exactness ?? 'exact',
@@ -49,7 +78,7 @@ export function shapeAssembleResponse(assemblyRes: any, budget = 4096): Assemble
     })),
     ...derivedContextItems.map((item: any) => ({
       role: 'system',
-      content: String(item?.summary ?? item?.content ?? item?.text ?? ''),
+      content: toContentBlocks(item?.summary ?? item?.content ?? item?.text ?? ''),
       metadata: {
         item_type: item?.item_type ?? 'derived_item',
         exactness: item?.exactness ?? 'derived',
@@ -57,7 +86,7 @@ export function shapeAssembleResponse(assemblyRes: any, budget = 4096): Assemble
         provenance: item?.provenance ?? contextProvenance ?? null,
       },
     })),
-  ].filter((m: any) => String(m?.content ?? '').trim());
+  ].filter((m: any) => extractTextContent(m?.content).trim());
 
   const messages = structuredContextMessages.length
     ? structuredContextMessages
@@ -68,10 +97,10 @@ export function shapeAssembleResponse(assemblyRes: any, budget = 4096): Assemble
           if (!text) return null;
           return {
             role: sender === 'assistant' ? 'assistant' : 'user',
-            content: text,
+            content: toContentBlocks(text),
           };
         })
-        .filter(Boolean);
+        .filter((msg: any) => msg && extractTextContent(msg.content).trim());
 
   const rawSummaryItems = structuredContextMessages.length
     ? []
@@ -107,7 +136,7 @@ export function shapeAssembleResponse(assemblyRes: any, budget = 4096): Assemble
 
   const estimatedTokens = Math.max(
     0,
-    messages.reduce((n: number, m: any) => n + Math.ceil(String(m?.content ?? '').length / 4), 0) +
+    messages.reduce((n: number, m: any) => n + Math.ceil(extractTextContent(m?.content).length / 4), 0) +
       Math.ceil((systemPromptAddition ?? '').length / 4),
   );
   const totalTokens = estimatedTokens;
@@ -120,9 +149,10 @@ export function toEngineAssembleResult(shaped: AssembleShapeResult): EngineAssem
     ? shaped.messages
         .map((message: any) => {
           const role = String(message?.role ?? 'user');
-          const content = String(message?.content ?? '');
-          if (!content.trim()) return null;
-          const messageEstimatedTokens = Math.max(0, Math.ceil(content.length / 4));
+          const content = toContentBlocks(message?.content);
+          const contentText = extractTextContent(content);
+          if (!contentText.trim()) return null;
+          const messageEstimatedTokens = Math.max(0, Math.ceil(contentText.length / 4));
           const messageTotalTokens = Number.isFinite(message?.usage?.totalTokens)
             ? Math.max(0, Number(message.usage.totalTokens))
             : Number.isFinite(message?.source?.totalTokens)
@@ -551,7 +581,7 @@ export default function register(api: any) {
     async ingest(params: any) {
       const sessionId = String(params?.sessionId ?? 'unknown-session');
       const role = String(params?.message?.role ?? 'unknown');
-      const text = String(params?.message?.content ?? '');
+      const text = extractTextContent(params?.message?.content);
       const turnId = `${Date.now()}`;
       const messageId = `${turnId}-${role}`;
 
