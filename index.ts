@@ -2076,6 +2076,40 @@ export default function register(api: any) {
     return null;
   };
 
+  const isTokenHeavyAssistantText = (text: string): boolean => {
+    const normalized = String(text ?? '');
+    if (!normalized.trim()) return false;
+    const tokenish = normalized.match(/`[A-Z0-9][A-Z0-9_-]{8,}`/g) ?? [];
+    if (tokenish.length >= 4) return true;
+    if (/I remember these durable items/i.test(normalized) && tokenish.length >= 2) return true;
+    return false;
+  };
+
+  const pruneMessagesForDeterministicIntent = (messages: any[], intent: NaturalAnswerIntent): any[] => {
+    if (!Array.isArray(messages) || !messages.length) return [];
+    if (intent !== 'memory_summary' && intent !== 'corpus') return messages;
+    const out: any[] = [];
+    for (const msg of messages) {
+      const role = String(msg?.role ?? '').toLowerCase();
+      if (role !== 'assistant') {
+        out.push(msg);
+        continue;
+      }
+      const text = extractTextContent(msg?.content);
+      if (intent === 'memory_summary' && isTokenHeavyAssistantText(text)) continue;
+      if (
+        intent === 'corpus' &&
+        (/Only the title-level memory:/i.test(text) ||
+          /I don.?t have (deeper|richer) content/i.test(text) ||
+          /title\/path-level/i.test(text))
+      ) {
+        continue;
+      }
+      out.push(msg);
+    }
+    return out;
+  };
+
   api.registerCommand?.({
     name: 'remember',
     description: 'Append an explicit durable memory note to the local fallback MEMORY.md.',
@@ -2991,6 +3025,7 @@ export default function register(api: any) {
         let naturalRoutingMessage: any = null;
         let naturalIntent: NaturalAnswerIntent = 'none';
         let naturalDraft: NaturalAnswerDraft | null = null;
+        let deterministicComposerActive = false;
         try {
           const compact = (await readCompactStore(sessionId)) ?? (await rebuildCompaction(sessionId));
           if (Array.isArray(compact?.items) && compact.items.length) {
@@ -3063,18 +3098,25 @@ export default function register(api: any) {
           const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
           naturalDraft = await buildNaturalAnswerDraft(sessionId, latestUserQuery);
           if (naturalRoutingPrompt) {
+            deterministicComposerActive = !!naturalDraft && (naturalIntent === 'memory_summary' || naturalIntent === 'corpus');
+            const hardContract = deterministicComposerActive
+              ? naturalIntent === 'memory_summary'
+                ? '\n\nDeterministic final-answer contract for memory summary:\n- Output five sections exactly: About you; Recent durable facts; Current conversation context; Books/corpus remembered; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Prefer meaningful facts and uncertainties over raw storage dumps.'
+                : '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
+              : '';
             const draftBlock = naturalDraft
               ? `\n\nDeterministic answer draft (preserve this substance in final answer):\n${naturalDraft.text}\n\nSource basis:\n${naturalDraft.sourceBasis
                   .map((line) => `- ${line}`)
                   .join('\n')}`
               : '';
             systemPromptAddition = systemPromptAddition
-              ? `${systemPromptAddition}\n\n${naturalRoutingPrompt}${draftBlock}`
-              : `${naturalRoutingPrompt}${draftBlock}`;
+              ? `${systemPromptAddition}\n\n${naturalRoutingPrompt}${hardContract}${draftBlock}`
+              : `${naturalRoutingPrompt}${hardContract}${draftBlock}`;
             naturalRoutingMessage = {
               role: 'system',
               content: toContentBlocks(
                 `Automatic retrieval context for current user query:\n${naturalRoutingPrompt}\n\n` +
+                  `${hardContract ? `${hardContract}\n\n` : ''}` +
                   `${naturalDraft ? `Deterministic answer draft:\n${naturalDraft.text}\n\n` : ''}` +
                   'Use this context directly in the answer. Prefer concise, source-aware natural language. Do not default to mirror token dumps when richer evidence exists.',
               ),
@@ -3101,13 +3143,14 @@ export default function register(api: any) {
               naturalIntent,
               hasNaturalDraft: !!naturalDraft,
               naturalDraftChars: (naturalDraft?.text ?? '').length,
+              deterministicComposerActive,
               shapedEstimatedTokens: estimatedTokens ?? null,
               shapedTotalTokens: totalTokens ?? null,
             }),
         );
 
         const boundedMessages = Array.isArray(messages) ? messages.slice(-20) : [];
-        messages = boundedMessages;
+        messages = pruneMessagesForDeterministicIntent(boundedMessages, naturalIntent);
         if (naturalRoutingMessage) {
           messages = [...messages, naturalRoutingMessage];
         }
@@ -3132,6 +3175,7 @@ export default function register(api: any) {
             naturalIntent,
             hasNaturalDraft: !!naturalDraft,
             naturalDraftChars: (naturalDraft?.text ?? '').length,
+            deterministicComposerActive,
           })}`,
         );
 
