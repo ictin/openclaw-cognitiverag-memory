@@ -413,9 +413,28 @@ export default function register(api: any) {
   const workspaceMemoryFile = path.join(process.cwd(), 'MEMORY.md');
   const sessionMemoryDir = path.join(pluginRoot, 'session_memory');
   const sessionExportDir = path.join(pluginRoot, 'session_exports');
+  const sessionKeyMapFile = path.join(sessionMemoryDir, 'session_key_map.json');
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
   const observedSessionIdsByKey = new Map<string, string>();
   let lastObservedSessionId = '';
+
+  try {
+    if (fsSync.existsSync(sessionKeyMapFile)) {
+      const raw = fsSync.readFileSync(sessionKeyMapFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        for (const [k, v] of Object.entries(parsed)) {
+          const key = String(k ?? '').trim();
+          const id = String(v ?? '').trim();
+          if (!key || !id) continue;
+          observedSessionIdsByKey.set(key, id);
+          lastObservedSessionId = id;
+        }
+      }
+    }
+  } catch {
+    // best-effort restore only
+  }
 
   try {
     api.logger?.info?.('[cognitiverag-memory] register-time path debug', {
@@ -611,7 +630,17 @@ export default function register(api: any) {
     const id = String(sessionId ?? '').trim();
     if (!id || id === 'unknown-session') return;
     lastObservedSessionId = id;
-    if (key) observedSessionIdsByKey.set(key, id);
+    if (!key) return;
+    observedSessionIdsByKey.set(key, id);
+    void (async () => {
+      try {
+        await fs.mkdir(sessionMemoryDir, { recursive: true });
+        const payload = Object.fromEntries(observedSessionIdsByKey.entries());
+        await fs.writeFile(sessionKeyMapFile, JSON.stringify(payload, null, 2));
+      } catch {
+        // best-effort only
+      }
+    })();
   };
 
   const resolveSessionPath = (kind: 'raw' | 'compact', sessionId: string) => {

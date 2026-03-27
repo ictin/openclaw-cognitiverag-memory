@@ -154,5 +154,34 @@ assert.match(String(recallAllRes?.text ?? ''), /local lossless hits:\s*[1-9]/i, 
 const explainRes = await cmd.crag_explain_memory.handler({});
 assert.match(String(explainRes?.text ?? ''), /local lossless session layer/i, 'architecture truth should mention local lossless layer');
 
+// Simulate plugin restart and ensure sessionKey -> sessionId mapping survives.
+const regsAfterRestart = { commands: [], engines: {} };
+const apiAfterRestart = {
+  source: path.join(tmpDir, 'index.ts'),
+  registerCommand: (c) => regsAfterRestart.commands.push(c),
+  registerHttpRoute: () => {},
+  registerContextEngine: (id, factory) => {
+    regsAfterRestart.engines[id] = factory();
+  },
+  config: { plugins: { slots: { contextEngine: 'cognitiverag-memory' } } },
+  logger: { info: () => {}, warn: () => {} },
+};
+register(apiAfterRestart);
+const cmdAfterRestart = Object.fromEntries(regsAfterRestart.commands.map((c) => [c.name, c]));
+const searchAfterRestart = await cmdAfterRestart.crag_session_search.handler({
+  args: [oldToken],
+  sessionKey: 'agent:main:lossless-a',
+});
+assert.match(
+  String(searchAfterRestart?.text ?? ''),
+  /sessionId:\s*lossless-session-a/i,
+  'search should resolve session id from persisted key map after restart',
+);
+assert.match(
+  String(searchAfterRestart?.text ?? ''),
+  /hits:\s*[1-9]/i,
+  'search should still return hits after restart without explicit session id',
+);
+
 restoreFetch();
 console.log('lossless session memory test passed');
