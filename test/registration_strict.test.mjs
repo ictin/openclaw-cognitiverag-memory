@@ -30,6 +30,8 @@ try {
 assert.strictEqual(regs.routes.filter(r => r === '/cognitiverag-memory/status').length, 1, 'exactly one status route');
 assert.strictEqual(regs.routes.filter(r => r === '/cognitiverag-memory/health').length, 1, 'exactly one health route');
 assert.ok(regs.commands.includes('crag_status'), 'crag_status present');
+assert.ok(regs.commands.includes('crag_recall'), 'crag_recall present');
+assert.ok(regs.commands.includes('crag_explain_memory'), 'crag_explain_memory present');
 assert.ok(!regs.commands.includes('crag-status'), 'crag-status absent');
 // Ensure the fake session/transcript methods were never called
 assert.strictEqual(spy.syntheticCreates, 0, 'no synthetic session creates during registration');

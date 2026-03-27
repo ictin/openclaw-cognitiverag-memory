@@ -264,6 +264,11 @@ type HealthState = {
   lastRollbackAt: string | null;
 };
 
+type RecallHit = {
+  source: 'backend_session_memory' | 'fallback_mirror_plugin' | 'fallback_mirror_workspace';
+  text: string;
+};
+
 const defaultHealthState = (): HealthState => ({
   backendReachable: false,
   mode: 'unknown',
@@ -312,6 +317,8 @@ export default function register(api: any) {
   const memoryFile = path.join(pluginRoot, 'MEMORY.md');
   const workspaceMemoryFile = path.join(process.cwd(), 'MEMORY.md');
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
+  const observedSessionIdsByKey = new Map<string, string>();
+  let lastObservedSessionId = '';
 
   try {
     api.logger?.info?.('[cognitiverag-memory] register-time path debug', {
@@ -502,6 +509,82 @@ export default function register(api: any) {
     }
   };
 
+  const rememberObservedSession = (sessionKey: unknown, sessionId: unknown) => {
+    const key = String(sessionKey ?? '').trim();
+    const id = String(sessionId ?? '').trim();
+    if (!id || id === 'unknown-session') return;
+    lastObservedSessionId = id;
+    if (key) observedSessionIdsByKey.set(key, id);
+  };
+
+  const collectBackendRecallHits = async (sessionId: string, query: string): Promise<RecallHit[]> => {
+    const trimmedQuery = String(query ?? '').trim().toLowerCase();
+    if (!sessionId || !trimmedQuery) return [];
+    try {
+      const assembled = await postJson(
+        '/session_assemble_context',
+        {
+          session_id: sessionId,
+          fresh_tail_count: 200,
+          budget: 8192,
+        },
+        2500,
+      );
+      const freshTail = Array.isArray(assembled?.body?.fresh_tail) ? assembled.body.fresh_tail : [];
+      const summaries = Array.isArray(assembled?.body?.summaries) ? assembled.body.summaries : [];
+      const contextBlock = assembled?.body?.context_block ?? null;
+      const exactItems = Array.isArray(contextBlock?.exact_items) ? contextBlock.exact_items : [];
+      const derivedItems = Array.isArray(contextBlock?.derived_items) ? contextBlock.derived_items : [];
+
+      const candidates = [
+        ...freshTail.map((m: any) => String(m?.text ?? '').trim()),
+        ...summaries.map((s: any) => String(s?.summary ?? '').trim()),
+        ...exactItems.map((i: any) => extractTextContent(i?.content ?? i?.summary ?? i?.text ?? '').trim()),
+        ...derivedItems.map((i: any) => extractTextContent(i?.summary ?? i?.content ?? i?.text ?? '').trim()),
+      ].filter(Boolean);
+
+      const seen = new Set<string>();
+      const hits: RecallHit[] = [];
+      for (const candidate of candidates) {
+        const normalized = candidate.toLowerCase();
+        if (!normalized.includes(trimmedQuery)) continue;
+        if (seen.has(candidate)) continue;
+        seen.add(candidate);
+        hits.push({ source: 'backend_session_memory', text: candidate });
+        if (hits.length >= 8) break;
+      }
+      return hits;
+    } catch {
+      return [];
+    }
+  };
+
+  const collectMirrorRecallHits = async (query: string): Promise<RecallHit[]> => {
+    const trimmedQuery = String(query ?? '').trim().toLowerCase();
+    if (!trimmedQuery) return [];
+    const out: RecallHit[] = [];
+    const collectFromFile = async (
+      filePath: string,
+      source: 'fallback_mirror_plugin' | 'fallback_mirror_workspace',
+    ) => {
+      try {
+        const text = await fs.readFile(filePath, 'utf8');
+        for (const line of text.split(/\r?\n/)) {
+          const entry = line.trim();
+          if (!entry.startsWith('-')) continue;
+          if (!entry.toLowerCase().includes(trimmedQuery)) continue;
+          out.push({ source, text: entry.replace(/^\-\s*/, '') });
+          if (out.length >= 8) return;
+        }
+      } catch {
+        // best-effort
+      }
+    };
+    await collectFromFile(memoryFile, 'fallback_mirror_plugin');
+    if (out.length < 8) await collectFromFile(workspaceMemoryFile, 'fallback_mirror_workspace');
+    return out.slice(0, 8);
+  };
+
   api.registerCommand?.({
     name: 'remember',
     description: 'Append an explicit durable memory note to the local fallback MEMORY.md.',
@@ -591,6 +674,115 @@ export default function register(api: any) {
     },
   });
 
+  api.registerCommand?.({
+    name: 'crag_recall',
+    description:
+      'Read-only recall with provenance from backend session memory and fallback mirrors. Usage: /crag_recall [--session-id <id>] <query>',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      const rawQuery = Array.isArray(ctx?.args)
+        ? ctx.args.join(' ').trim()
+        : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.args ?? '').trim();
+      let explicitSessionId = '';
+      let query = rawQuery;
+      const withExplicitSessionId = rawQuery.match(/^\s*--session-id\s+([^\s]+)\s+([\s\S]+)$/i);
+      if (withExplicitSessionId) {
+        explicitSessionId = String(withExplicitSessionId[1] ?? '').trim();
+        query = String(withExplicitSessionId[2] ?? '').trim();
+      }
+      if (!query) return { text: 'Usage: /crag_recall [--session-id <id>] <query>' };
+
+      const sessionKey = String(
+        ctx?.sessionKey ??
+          ctx?.session?.key ??
+          ctx?.session?.sessionKey ??
+          ctx?.session_key ??
+          ctx?.meta?.sessionKey ??
+          ctx?.meta?.session_key ??
+          ctx?.request?.sessionKey ??
+          ctx?.request?.session_key ??
+          '',
+      ).trim();
+      const directSessionId = String(
+        ctx?.sessionId ??
+          ctx?.session?.id ??
+          ctx?.session?.sessionId ??
+          ctx?.session_id ??
+          ctx?.meta?.sessionId ??
+          ctx?.meta?.session_id ??
+          ctx?.request?.sessionId ??
+          ctx?.request?.session_id ??
+          '',
+      ).trim();
+      const mappedSessionId = sessionKey ? String(observedSessionIdsByKey.get(sessionKey) ?? '').trim() : '';
+      let sessionIdSource: 'explicit' | 'ctx' | 'mapped' | 'lastObserved' | 'missing' = 'missing';
+      const sessionId = (() => {
+        if (explicitSessionId) {
+          sessionIdSource = 'explicit';
+          return explicitSessionId;
+        }
+        if (directSessionId) {
+          sessionIdSource = 'ctx';
+          return directSessionId;
+        }
+        if (mappedSessionId) {
+          sessionIdSource = 'mapped';
+          return mappedSessionId;
+        }
+        if (lastObservedSessionId) {
+          sessionIdSource = 'lastObserved';
+          return lastObservedSessionId;
+        }
+        return '';
+      })();
+
+      const backendHits = sessionId ? await collectBackendRecallHits(sessionId, query) : [];
+      const mirrorHits = await collectMirrorRecallHits(query);
+      const combined = [...backendHits, ...mirrorHits].slice(0, 8);
+      const lines = [
+        'CognitiveRAG Recall',
+        `- query: ${query}`,
+        `- sessionKey: ${sessionKey || 'unknown'}`,
+        `- sessionId: ${sessionId || 'unknown'}`,
+        `- sessionId source: ${sessionIdSource}`,
+        `- backend hits: ${backendHits.length}`,
+        `- fallback mirror hits: ${mirrorHits.length}`,
+      ];
+      if (!combined.length) {
+        lines.push('- hits: none');
+      } else {
+        lines.push('- hits:');
+        for (const hit of combined) lines.push(`  - [${hit.source}] ${hit.text}`);
+      }
+      return { text: lines.join('\n') };
+    },
+  });
+
+  api.registerCommand?.({
+    name: 'crag_explain_memory',
+    description: 'Read-only truth report of the active CognitiveRAG memory architecture.',
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => {
+      const current = await readHealthState();
+      const slot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
+      const lines = [
+        'CognitiveRAG Memory Architecture',
+        `- active context engine slot: ${slot}`,
+        '- cognitiverag-memory plugin loaded: yes',
+        '- backend/session memory: used via /session_append_message, /session_upsert_context_item, /session_assemble_context',
+        `- fallback mirror MEMORY.md active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
+        '- durable facts: selective promoted notes (exact facts) plus optional summaries',
+        '- source truth:',
+        '  - backend_session_memory: CRAG backend/session context',
+        '  - fallback_mirror_plugin: plugin-local MEMORY.md',
+        '  - fallback_mirror_workspace: workspace MEMORY.md',
+      ];
+      return { text: lines.join('\n') };
+    },
+  });
+
   // COMMAND: crag_status (read-only)
   // Invariants:
   // - runtime plugin must never create synthetic OpenClaw sessions or write transcripts
@@ -637,6 +829,8 @@ export default function register(api: any) {
 
     async ingest(params: any) {
       const sessionId = String(params?.sessionId ?? 'unknown-session');
+      const sessionKey = String(params?.sessionKey ?? '');
+      rememberObservedSession(sessionKey, sessionId);
       const role = String(params?.message?.role ?? 'unknown');
       const text = extractTextContent(params?.message?.content);
       const turnId = `${Date.now()}`;
@@ -644,7 +838,7 @@ export default function register(api: any) {
 
       api.logger?.info?.('[cognitiverag-memory] ingest called', {
         sessionId,
-        sessionKey: params?.sessionKey,
+        sessionKey,
         role,
       });
 
@@ -719,10 +913,12 @@ export default function register(api: any) {
 
     async assemble(params: any) {
       const sessionId = String(params?.sessionId ?? 'unknown-session');
+      const sessionKey = String(params?.sessionKey ?? '');
+      rememberObservedSession(sessionKey, sessionId);
       const inputMessages = Array.isArray(params?.messages) ? params.messages : [];
       api.logger?.info?.('[cognitiverag-memory] assemble called', {
         sessionId,
-        sessionKey: params?.sessionKey,
+        sessionKey,
         inputMessages: inputMessages.length,
       });
 
@@ -787,12 +983,17 @@ export default function register(api: any) {
           if ((Number(fallback?.sourceCounts?.plugin ?? 0) > 0 || Number(fallback?.sourceCounts?.workspace ?? 0) > 0) && !systemPromptAddition) {
             await writeHealthState({ fallbackMemoryMirrorActive: true });
           }
-          if (fallbackSummary) {
-            const fallbackPrompt = `Fallback memory mirror (durable user-noted facts):\n${fallbackSummary}`;
-            systemPromptAddition = systemPromptAddition
-              ? `${systemPromptAddition}\n\n${fallbackPrompt}`
-              : fallbackPrompt;
-          }
+        if (fallbackSummary) {
+          const fallbackPrompt = `Fallback memory mirror (durable user-noted facts):\n${fallbackSummary}`;
+          systemPromptAddition = systemPromptAddition
+            ? `${systemPromptAddition}\n\n${fallbackPrompt}`
+            : fallbackPrompt;
+        }
+        const architecturePrompt =
+          'Memory architecture truth: cognitiverag-memory is active. Backend/session memory is primary CRAG context; MEMORY.md fallback mirror is auxiliary.';
+        systemPromptAddition = systemPromptAddition
+          ? `${systemPromptAddition}\n\n${architecturePrompt}`
+          : architecturePrompt;
         } catch (e: any) {
           api.logger?.warn?.(
             `[cognitiverag-memory] fallback summarizer read failed ${JSON.stringify({
