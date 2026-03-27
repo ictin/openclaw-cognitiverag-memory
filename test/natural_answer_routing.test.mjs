@@ -114,6 +114,11 @@ assert.match(
   /Deterministic final-answer contract for memory summary/i,
   'memory summary should include hard deterministic contract',
 );
+assert.match(
+  JSON.stringify(memorySummary?.messages ?? []),
+  /DETERMINISTIC_RESPONSE_MODE=memory_summary/i,
+  'memory summary should enforce deterministic final response mode in user turn',
+);
 
 const corpusAnswer = await engine.assemble({
   sessionId,
@@ -132,6 +137,11 @@ assert.match(
   corpusPrompt,
   /Deterministic final-answer contract for corpus overview/i,
   'corpus routing should include hard deterministic contract',
+);
+assert.match(
+  JSON.stringify(corpusAnswer?.messages ?? []),
+  /DETERMINISTIC_RESPONSE_MODE=corpus_overview/i,
+  'corpus overview should enforce deterministic final response mode in user turn',
 );
 
 const wrappedCorpusAnswer = await engine.assemble({

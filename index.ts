@@ -2110,6 +2110,39 @@ export default function register(api: any) {
     return out;
   };
 
+  const enforceDeterministicDraftOnLastUser = (
+    messages: any[],
+    intent: NaturalAnswerIntent,
+    query: string,
+    draft: NaturalAnswerDraft | null,
+  ): any[] => {
+    if (!Array.isArray(messages) || !messages.length || !draft) return messages;
+    if (intent !== 'memory_summary' && intent !== 'corpus') return messages;
+    const out = [...messages];
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      const role = String(out[i]?.role ?? '').toLowerCase();
+      if (role !== 'user') continue;
+      const modeLabel = intent === 'memory_summary' ? 'memory_summary' : 'corpus_overview';
+      const strictPrompt = [
+        `DETERMINISTIC_RESPONSE_MODE=${modeLabel}`,
+        `Original user question: ${normalizeNaturalUserQuery(query)}`,
+        'You must answer with the exact drafted response below.',
+        'Do not add or remove sections.',
+        'Do not replace with metadata-only fallback if drafted response contains retrieved excerpts.',
+        '',
+        'BEGIN_DRAFT_RESPONSE',
+        String(draft.text ?? '').trim(),
+        'END_DRAFT_RESPONSE',
+      ].join('\n');
+      out[i] = {
+        ...out[i],
+        content: toContentBlocks(strictPrompt),
+      };
+      return out;
+    }
+    return out;
+  };
+
   api.registerCommand?.({
     name: 'remember',
     description: 'Append an explicit durable memory note to the local fallback MEMORY.md.',
@@ -3151,6 +3184,9 @@ export default function register(api: any) {
 
         const boundedMessages = Array.isArray(messages) ? messages.slice(-20) : [];
         messages = pruneMessagesForDeterministicIntent(boundedMessages, naturalIntent);
+        if (deterministicComposerActive && naturalDraft) {
+          messages = enforceDeterministicDraftOnLastUser(messages, naturalIntent, latestUserQueryFromMessages(inputMessages), naturalDraft);
+        }
         if (naturalRoutingMessage) {
           messages = [...messages, naturalRoutingMessage];
         }
@@ -3183,7 +3219,9 @@ export default function register(api: any) {
         else await markFail(`assemble_status_${assemblyRes.status}`);
 
         return toEngineAssembleResult({
-          ...shaped,
+          messages,
+          estimatedTokens,
+          totalTokens,
           systemPromptAddition,
         });
       } catch (error: any) {
