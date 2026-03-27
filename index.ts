@@ -272,12 +272,15 @@ type RecallHit = {
     | 'fallback_mirror_workspace'
     | 'lossless_session_raw'
     | 'lossless_session_compact'
-    | 'corpus_chunk';
+    | 'corpus_chunk'
+    | 'large_file_excerpt';
   text: string;
   sessionId?: string;
   chunkId?: string;
   corpusPath?: string;
   corpusTitle?: string;
+  spanStart?: number;
+  spanEnd?: number;
 };
 
 type SessionPart = {
@@ -345,6 +348,35 @@ type CorpusStore = {
   chunks: CorpusChunk[];
 };
 
+type LargeFileDoc = {
+  docId: string;
+  sourcePath: string;
+  title: string;
+  sizeBytes: number;
+  ingestedAt: string;
+  summary: string;
+  excerptCount: number;
+};
+
+type LargeFileExcerpt = {
+  excerptId: string;
+  docId: string;
+  sourcePath: string;
+  title: string;
+  excerptIndex: number;
+  startOffset: number;
+  endOffset: number;
+  text: string;
+  ingestedAt: string;
+};
+
+type LargeFileStore = {
+  version: 1;
+  updatedAt: string;
+  docs: LargeFileDoc[];
+  excerpts: LargeFileExcerpt[];
+};
+
 const LOCAL_FRESH_TAIL_COUNT = 12;
 const LOCAL_COMPACT_CHUNK_SIZE = 8;
 const CORPUS_MAX_FILES_DEFAULT = 4;
@@ -353,6 +385,11 @@ const CORPUS_MAX_FILE_BYTES = 512 * 1024;
 const CORPUS_MIN_FILE_CHARS = 120;
 const CORPUS_CHUNK_TARGET_CHARS = 900;
 const CORPUS_CHUNK_OVERLAP_CHARS = 120;
+const LARGE_FILE_THRESHOLD_BYTES = CORPUS_MAX_FILE_BYTES;
+const LARGE_FILE_HARD_MAX_BYTES = 16 * 1024 * 1024;
+const LARGE_FILE_EXCERPT_TARGET_CHARS = 1200;
+const LARGE_FILE_EXCERPT_OVERLAP_CHARS = 180;
+const LARGE_FILE_MAX_EXCERPTS_PER_DOC = 280;
 
 function toSafeSessionFilePart(sessionId: string): string {
   const id = String(sessionId ?? '').trim() || 'unknown-session';
@@ -463,6 +500,58 @@ function buildCorpusChunks(text: string): Array<{ startOffset: number; endOffset
   return chunks;
 }
 
+function buildLargeFileExcerpts(text: string): Array<{ startOffset: number; endOffset: number; text: string }> {
+  const normalized = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+  const chunks: Array<{ startOffset: number; endOffset: number; text: string }> = [];
+  let cursor = 0;
+  while (cursor < normalized.length && chunks.length < LARGE_FILE_MAX_EXCERPTS_PER_DOC) {
+    const remaining = normalized.length - cursor;
+    const target = Math.min(LARGE_FILE_EXCERPT_TARGET_CHARS, remaining);
+    let end = cursor + target;
+    if (end < normalized.length) {
+      const lookBackStart = Math.max(cursor + Math.floor(target * 0.5), end - 320);
+      const breakAtNewline = normalized.lastIndexOf('\n', end);
+      const breakAtSentence = Math.max(
+        normalized.lastIndexOf('. ', end),
+        normalized.lastIndexOf('! ', end),
+        normalized.lastIndexOf('? ', end),
+      );
+      if (breakAtNewline >= lookBackStart) end = breakAtNewline + 1;
+      else if (breakAtSentence >= lookBackStart) end = breakAtSentence + 2;
+    }
+    const snippet = normalized.slice(cursor, end).trim();
+    if (snippet) {
+      chunks.push({
+        startOffset: cursor,
+        endOffset: end,
+        text: snippet,
+      });
+    }
+    if (end >= normalized.length) break;
+    cursor = Math.max(0, end - LARGE_FILE_EXCERPT_OVERLAP_CHARS);
+  }
+  return chunks;
+}
+
+function buildLargeFileSummary(sourcePath: string, text: string): string {
+  const normalized = String(text ?? '').replace(/\r\n/g, '\n');
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const preview = lines.slice(0, 6).map((line) => (line.length > 150 ? `${line.slice(0, 149)}…` : line));
+  const summaryLines = [
+    `source: ${sourcePath}`,
+    `lines: ${lines.length}`,
+    `chars: ${normalized.length}`,
+    'preview:',
+    ...preview.map((line) => `- ${line}`),
+  ];
+  const summary = summaryLines.join('\n').trim();
+  return summary.length > 1600 ? `${summary.slice(0, 1599)}…` : summary;
+}
+
 const defaultHealthState = (): HealthState => ({
   backendReachable: false,
   mode: 'unknown',
@@ -515,6 +604,8 @@ export default function register(api: any) {
   const sessionKeyMapFile = path.join(sessionMemoryDir, 'session_key_map.json');
   const corpusMemoryDir = path.join(pluginRoot, 'corpus_memory');
   const corpusIndexFile = path.join(corpusMemoryDir, 'corpus_index.json');
+  const largeFileStoreDir = path.join(pluginRoot, 'large_file_store');
+  const largeFileIndexFile = path.join(largeFileStoreDir, 'large_files.json');
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
   const observedSessionIdsByKey = new Map<string, string>();
   let lastObservedSessionId = '';
@@ -826,6 +917,144 @@ export default function register(api: any) {
     return next;
   };
 
+  const ensureLargeFileStoreDir = async () => {
+    await fs.mkdir(largeFileStoreDir, { recursive: true });
+  };
+
+  const readLargeFileStore = async (): Promise<LargeFileStore> => {
+    try {
+      const raw = await fs.readFile(largeFileIndexFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') throw new Error('invalid large file store');
+      return {
+        version: 1,
+        updatedAt: String(parsed.updatedAt ?? new Date().toISOString()),
+        docs: Array.isArray(parsed.docs) ? (parsed.docs as LargeFileDoc[]) : [],
+        excerpts: Array.isArray(parsed.excerpts) ? (parsed.excerpts as LargeFileExcerpt[]) : [],
+      };
+    } catch {
+      return { version: 1, updatedAt: new Date().toISOString(), docs: [], excerpts: [] };
+    }
+  };
+
+  const writeLargeFileStore = async (store: LargeFileStore) => {
+    await ensureLargeFileStoreDir();
+    const next: LargeFileStore = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      docs: Array.isArray(store?.docs) ? store.docs : [],
+      excerpts: Array.isArray(store?.excerpts) ? store.excerpts : [],
+    };
+    await fs.writeFile(largeFileIndexFile, JSON.stringify(next, null, 2));
+    return next;
+  };
+
+  const upsertLargeFileDocument = async (sourcePath: string, content: string, sizeBytes: number) => {
+    const normalized = String(content ?? '').replace(/\r\n/g, '\n').trim();
+    if (!normalized) return null;
+    const docId = toHashId(`large:${sourcePath}`);
+    const title = deriveCorpusTitle(sourcePath, normalized);
+    const ingestedAt = new Date().toISOString();
+    const excerpts = buildLargeFileExcerpts(normalized);
+    const summary = buildLargeFileSummary(sourcePath, normalized);
+    const store = await readLargeFileStore();
+    const nextDocs = store.docs.filter((doc) => String(doc?.docId ?? '') !== docId);
+    const nextExcerpts = store.excerpts.filter((entry) => String(entry?.docId ?? '') !== docId);
+    nextDocs.push({
+      docId,
+      sourcePath,
+      title,
+      sizeBytes,
+      ingestedAt,
+      summary,
+      excerptCount: excerpts.length,
+    });
+    excerpts.forEach((entry, idx) => {
+      nextExcerpts.push({
+        excerptId: `${docId}:${idx + 1}`,
+        docId,
+        sourcePath,
+        title,
+        excerptIndex: idx,
+        startOffset: entry.startOffset,
+        endOffset: entry.endOffset,
+        text: entry.text,
+        ingestedAt,
+      });
+    });
+    await writeLargeFileStore({
+      version: 1,
+      updatedAt: ingestedAt,
+      docs: nextDocs.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath)),
+      excerpts: nextExcerpts,
+    });
+    return {
+      docId,
+      title,
+      sourcePath,
+      sizeBytes,
+      summary,
+      excerptCount: excerpts.length,
+    };
+  };
+
+  const collectLargeFileRecallHits = async (query: string, limit = 8): Promise<RecallHit[]> => {
+    const q = String(query ?? '').trim().toLowerCase();
+    if (!q) return [];
+    const qTokens = tokenizeQuery(q);
+    const store = await readLargeFileStore();
+    const scored = store.excerpts
+      .map((entry) => {
+        const hay = String(entry?.text ?? '').toLowerCase();
+        if (!hay) return null;
+        const titleHay = String(entry?.title ?? '').toLowerCase();
+        const pathHay = String(entry?.sourcePath ?? '').toLowerCase();
+        const exactMatch = hay.includes(q) || titleHay.includes(q) || pathHay.includes(q);
+        let score = 0;
+        if (hay.includes(q)) score += 230;
+        if (titleHay.includes(q)) score += 120;
+        if (pathHay.includes(q)) score += 70;
+        let overlap = 0;
+        for (const tok of qTokens) {
+          if (hay.includes(tok)) overlap += 1;
+        }
+        const minOverlap = qTokens.length >= 3 ? 2 : 1;
+        if (!exactMatch && overlap < minOverlap) return null;
+        score += overlap * 14;
+        if (!exactMatch && score < 36) return null;
+        return { entry, score };
+      })
+      .filter((row): row is { entry: LargeFileExcerpt; score: number } => !!row)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          a.entry.sourcePath.localeCompare(b.entry.sourcePath) ||
+          a.entry.excerptIndex - b.entry.excerptIndex,
+      )
+      .slice(0, Math.max(1, limit));
+
+    return scored.map(({ entry }) => {
+      const compactText = entry.text.replace(/\s+/g, ' ').trim();
+      const excerpt = compactText.length > 260 ? `${compactText.slice(0, 259)}…` : compactText;
+      return {
+        source: 'large_file_excerpt',
+        chunkId: entry.excerptId,
+        corpusPath: entry.sourcePath,
+        corpusTitle: entry.title,
+        spanStart: entry.startOffset,
+        spanEnd: entry.endOffset,
+        text: `${entry.title} | ${entry.sourcePath} | ${entry.excerptId} | span ${entry.startOffset}-${entry.endOffset} | ${excerpt}`,
+      };
+    });
+  };
+
+  const getLargeFileExcerptById = async (excerptId: string): Promise<LargeFileExcerpt | null> => {
+    const id = String(excerptId ?? '').trim();
+    if (!id) return null;
+    const store = await readLargeFileStore();
+    return store.excerpts.find((entry) => String(entry?.excerptId ?? '') === id) ?? null;
+  };
+
   const collectCorpusFiles = async (rootDir: string, maxFiles: number): Promise<string[]> => {
     const root = path.resolve(rootDir);
     const allowedExt = new Set(['.txt', '.md', '.markdown']);
@@ -855,7 +1084,8 @@ export default function register(api: any) {
         if (!allowedExt.has(path.extname(entry.name).toLowerCase())) continue;
         try {
           const st = await fs.stat(abs);
-          if (!Number.isFinite(st.size) || st.size > CORPUS_MAX_FILE_BYTES || st.size < CORPUS_MIN_FILE_CHARS) continue;
+          if (!Number.isFinite(st.size) || st.size > LARGE_FILE_HARD_MAX_BYTES || st.size < CORPUS_MIN_FILE_CHARS)
+            continue;
           files.push(abs);
           if (files.length >= maxFiles) break;
         } catch {
@@ -875,14 +1105,28 @@ export default function register(api: any) {
     const nextDocs = [...store.docs];
     const nextChunks = [...store.chunks];
     const ingested: Array<{ sourcePath: string; docId: string; title: string; chunkCount: number; charCount: number }> = [];
+    const interceptedLarge: Array<{
+      sourcePath: string;
+      docId: string;
+      title: string;
+      sizeBytes: number;
+      excerptCount: number;
+      summary: string;
+    }> = [];
     const skipped: Array<{ sourcePath: string; reason: string }> = [];
 
     for (const sourcePath of dedupedPaths) {
       let text = '';
+      let sizeBytes = 0;
       try {
         const stat = await fs.stat(sourcePath);
-        if (!Number.isFinite(stat.size) || stat.size > CORPUS_MAX_FILE_BYTES) {
+        sizeBytes = Number(stat?.size ?? 0);
+        if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
           skipped.push({ sourcePath, reason: 'too_large_or_invalid_size' });
+          continue;
+        }
+        if (sizeBytes > LARGE_FILE_HARD_MAX_BYTES) {
+          skipped.push({ sourcePath, reason: 'exceeds_large_file_hard_cap' });
           continue;
         }
         text = await fs.readFile(sourcePath, 'utf8');
@@ -893,6 +1137,15 @@ export default function register(api: any) {
       const normalized = String(text ?? '').replace(/\r\n/g, '\n').trim();
       if (normalized.length < CORPUS_MIN_FILE_CHARS) {
         skipped.push({ sourcePath, reason: 'too_short' });
+        continue;
+      }
+      if (sizeBytes > LARGE_FILE_THRESHOLD_BYTES) {
+        const upserted = await upsertLargeFileDocument(sourcePath, normalized, sizeBytes);
+        if (!upserted) {
+          skipped.push({ sourcePath, reason: 'large_file_upsert_failed' });
+          continue;
+        }
+        interceptedLarge.push(upserted);
         continue;
       }
       const docId = toHashId(sourcePath);
@@ -946,10 +1199,12 @@ export default function register(api: any) {
     });
     return {
       ingested,
+      interceptedLarge,
       skipped,
       totalDocs: saved.docs.length,
       totalChunks: saved.chunks.length,
       corpusIndexFile,
+      largeFileIndexFile,
     };
   };
 
@@ -1377,15 +1632,25 @@ export default function register(api: any) {
         `- max files: ${maxFiles}`,
         `- selected files: ${selected.length}`,
         `- ingested files: ${result.ingested.length}`,
+        `- intercepted large files: ${result.interceptedLarge.length}`,
         `- skipped files: ${result.skipped.length}`,
         `- total corpus docs: ${result.totalDocs}`,
         `- total corpus chunks: ${result.totalChunks}`,
         `- corpus index: ${result.corpusIndexFile}`,
+        `- large file index: ${result.largeFileIndexFile}`,
       ];
       if (result.ingested.length) {
         lines.push('- ingested:');
         for (const doc of result.ingested.slice(0, 8)) {
           lines.push(`  - ${doc.title} | ${doc.sourcePath} | chunks=${doc.chunkCount} | chars=${doc.charCount}`);
+        }
+      }
+      if (result.interceptedLarge.length) {
+        lines.push('- intercepted large files:');
+        for (const doc of result.interceptedLarge.slice(0, 8)) {
+          lines.push(
+            `  - ${doc.title} | ${doc.sourcePath} | bytes=${doc.sizeBytes} | excerpts=${doc.excerptCount}`,
+          );
         }
       }
       if (result.skipped.length) {
@@ -1451,6 +1716,92 @@ export default function register(api: any) {
   });
 
   api.registerCommand?.({
+    name: 'crag_large_describe',
+    description: 'Read-only large-file store summary and exploration metadata.',
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => {
+      const store = await readLargeFileStore();
+      const lines = [
+        'CognitiveRAG Large File Store Describe',
+        `- threshold bytes: ${LARGE_FILE_THRESHOLD_BYTES}`,
+        `- hard cap bytes: ${LARGE_FILE_HARD_MAX_BYTES}`,
+        `- docs: ${store.docs.length}`,
+        `- excerpts: ${store.excerpts.length}`,
+        `- updated: ${store.updatedAt}`,
+        `- large file index: ${largeFileIndexFile}`,
+      ];
+      if (store.docs.length) {
+        lines.push('- docs:');
+        for (const doc of store.docs.slice(0, 8)) {
+          lines.push(`  - ${doc.title} | ${doc.sourcePath} | bytes=${doc.sizeBytes} | excerpts=${doc.excerptCount}`);
+        }
+      }
+      return { text: lines.join('\n') };
+    },
+  });
+
+  api.registerCommand?.({
+    name: 'crag_large_search',
+    description: 'Read-only large-file excerpt search with provenance. Usage: /crag_large_search <query>',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      const query = Array.isArray(ctx?.args)
+        ? ctx.args.join(' ').trim()
+        : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.args ?? '').trim();
+      if (!query) return { text: 'Usage: /crag_large_search <query>' };
+      const hits = await collectLargeFileRecallHits(query, 8);
+      const lines = [
+        'CognitiveRAG Large File Search',
+        `- query: ${query}`,
+        `- hits: ${hits.length}`,
+      ];
+      if (!hits.length) {
+        lines.push('- no matching large-file excerpts');
+      } else {
+        lines.push('- matches:');
+        for (const hit of hits) lines.push(`  - [${hit.source}] ${hit.text}`);
+      }
+      return { text: lines.join('\n') };
+    },
+  });
+
+  api.registerCommand?.({
+    name: 'crag_large_excerpt',
+    description: 'Read-only large-file excerpt expansion by excerpt id. Usage: /crag_large_excerpt <excerpt-id>',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      const target = Array.isArray(ctx?.args)
+        ? ctx.args.join(' ').trim()
+        : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.args ?? '').trim();
+      if (!target) return { text: 'Usage: /crag_large_excerpt <excerpt-id>' };
+      const entry = await getLargeFileExcerptById(target);
+      if (!entry) {
+        return {
+          text: [
+            'CognitiveRAG Large File Excerpt',
+            `- excerpt id: ${target}`,
+            '- result: not found',
+          ].join('\n'),
+        };
+      }
+      return {
+        text: [
+          'CognitiveRAG Large File Excerpt',
+          `- excerpt id: ${entry.excerptId}`,
+          `- title: ${entry.title}`,
+          `- source path: ${entry.sourcePath}`,
+          `- span: ${entry.startOffset}-${entry.endOffset}`,
+          '- excerpt:',
+          entry.text,
+        ].join('\n'),
+      };
+    },
+  });
+
+  api.registerCommand?.({
     name: 'crag_recall',
     description:
       'Read-only recall with provenance from backend session memory and fallback mirrors. Usage: /crag_recall [--session-id <id>] <query>',
@@ -1488,9 +1839,10 @@ export default function register(api: any) {
         }
         if (localHits.length >= 8) break;
       }
+      const largeFileHits = await collectLargeFileRecallHits(query, 8);
       const corpusHits = await collectCorpusRecallHits(query, 8);
       const mirrorHits = await collectMirrorRecallHits(query);
-      const combined = [...backendHits, ...localHits, ...corpusHits, ...mirrorHits].slice(0, 8);
+      const combined = [...backendHits, ...localHits, ...largeFileHits, ...corpusHits, ...mirrorHits].slice(0, 8);
       const lines = [
         'CognitiveRAG Recall',
         `- query: ${query}`,
@@ -1500,6 +1852,7 @@ export default function register(api: any) {
         `- sessionId source: ${sessionIdSource}`,
         `- backend hits: ${backendHits.length}`,
         `- local lossless hits: ${localHits.length}`,
+        `- large file hits: ${largeFileHits.length}`,
         `- corpus hits: ${corpusHits.length}`,
         `- fallback mirror hits: ${mirrorHits.length}`,
       ];
@@ -1682,12 +2035,14 @@ export default function register(api: any) {
         '- backend/session memory: used via /session_append_message, /session_upsert_context_item, /session_assemble_context',
         '- local lossless session layer: plugin-owned raw + compacted session store under session_memory/',
         '- corpus layer: plugin-owned chunked corpus index under corpus_memory/ (ingest via /crag_corpus_ingest)',
+        '- large-file layer: plugin-owned large_file_store with summaries + excerpt locators (search via /crag_large_search)',
         `- fallback mirror MEMORY.md active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
         '- durable facts: selective promoted notes (exact facts) plus optional summaries',
         '- source truth:',
         '  - backend_session_memory: CRAG backend/session context',
         '  - lossless_session_raw: plugin-local exact message storage',
         '  - lossless_session_compact: plugin-local compacted history summaries with chunk ids',
+        '  - large_file_excerpt: plugin-local large-file excerpt with span locator',
         '  - corpus_chunk: plugin-local corpus retrieval chunk with file/chunk provenance',
         '  - fallback_mirror_plugin: plugin-local MEMORY.md',
         '  - fallback_mirror_workspace: workspace MEMORY.md',
@@ -1926,7 +2281,7 @@ export default function register(api: any) {
             : fallbackPrompt;
         }
         const architecturePrompt =
-          'Memory architecture truth: cognitiverag-memory is active. Backend/session memory is primary CRAG context; plugin-local lossless session layer stores exact + compacted history; corpus_memory provides chunked file retrieval with provenance; MEMORY.md fallback mirror is auxiliary.';
+          'Memory architecture truth: cognitiverag-memory is active. Backend/session memory is primary CRAG context; plugin-local lossless session layer stores exact + compacted history; corpus_memory stores normal chunked files; large_file_store keeps oversized files as bounded summaries + excerpt locators; MEMORY.md fallback mirror is auxiliary.';
         systemPromptAddition = systemPromptAddition
           ? `${systemPromptAddition}\n\n${architecturePrompt}`
           : architecturePrompt;

@@ -110,6 +110,7 @@ assert.equal(typeof explain?.text, 'string', 'crag_explain_memory must return te
 assert.match(explain.text, /cognitiverag-memory plugin loaded:\s*yes/i, 'truth text must confirm active plugin');
 assert.match(explain.text, /backend\/session memory/i, 'truth text must mention backend/session memory');
 assert.match(explain.text, /corpus layer/i, 'truth text must mention corpus layer');
+assert.match(explain.text, /large-file layer/i, 'truth text must mention large-file layer');
 assert.doesNotMatch(explain.text, /no cognitiverag plugin/i, 'truth text must not deny plugin presence');
 
 restoreFetch();
