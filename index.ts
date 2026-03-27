@@ -291,6 +291,17 @@ type RankedRecallHit = {
   reasons: string[];
 };
 
+type SessionQuoteHit = {
+  source: 'lossless_session_raw' | 'lossless_session_compact';
+  sessionId: string;
+  seqStart: number;
+  seqEnd: number;
+  score: number;
+  exact: boolean;
+  chunkId?: string;
+  text: string;
+};
+
 type SessionPart = {
   type: string;
   text: string;
@@ -611,6 +622,12 @@ function queryMatchesText(queryLower: string, textLower: string, qTokens: string
   }
   const minOverlap = qTokens.length >= 4 ? 2 : 1;
   return overlap >= minOverlap;
+}
+
+function buildSnippet(input: string, maxChars: number): string {
+  const normalized = String(input ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > maxChars ? `${normalized.slice(0, maxChars - 1)}…` : normalized;
 }
 
 function buildCorpusChunks(text: string): Array<{ startOffset: number; endOffset: number; text: string }> {
@@ -1514,6 +1531,85 @@ export default function register(api: any) {
     return hits;
   };
 
+  const collectSessionQuoteHits = async (
+    sessionId: string,
+    query: string,
+    exactMode: boolean,
+    limit = 12,
+  ): Promise<{
+    raw: SessionQuoteHit[];
+    compact: SessionQuoteHit[];
+    expandedFromCompact: RawSessionEntry[];
+  }> => {
+    const q = String(query ?? '').trim().toLowerCase();
+    if (!sessionId || !q) return { raw: [], compact: [], expandedFromCompact: [] };
+    const qTokens = tokenizeQuery(q);
+    const entries = await readRawEntries(sessionId);
+    const compact = (await readCompactStore(sessionId)) ?? (await rebuildCompaction(sessionId));
+
+    const rawHits: SessionQuoteHit[] = [];
+    for (const entry of entries) {
+      const text = String(entry?.text ?? '').trim();
+      if (!text) continue;
+      const hay = text.toLowerCase();
+      const exact = hay.includes(q);
+      if (exactMode && !exact) continue;
+      if (!exactMode && !queryMatchesText(q, hay, qTokens)) continue;
+      let overlap = 0;
+      for (const tok of qTokens) {
+        if (hay.includes(tok)) overlap += 1;
+      }
+      let score = exact ? 120 : 70;
+      score += overlap * 8;
+      rawHits.push({
+        source: 'lossless_session_raw',
+        sessionId,
+        seqStart: entry.seq,
+        seqEnd: entry.seq,
+        score,
+        exact,
+        text: buildSnippet(text, 320),
+      });
+    }
+    rawHits.sort((a, b) => b.score - a.score || a.seqStart - b.seqStart);
+
+    const compactHits: SessionQuoteHit[] = [];
+    for (const item of compact.items) {
+      const text = `${item.summary}\n${item.sample.join('\n')}`;
+      const hay = text.toLowerCase();
+      const exact = hay.includes(q);
+      if (exactMode && !exact) continue;
+      if (!exactMode && !queryMatchesText(q, hay, qTokens)) continue;
+      let overlap = 0;
+      for (const tok of qTokens) {
+        if (hay.includes(tok)) overlap += 1;
+      }
+      let score = exact ? 92 : 56;
+      score += overlap * 6;
+      compactHits.push({
+        source: 'lossless_session_compact',
+        sessionId,
+        seqStart: item.startSeq,
+        seqEnd: item.endSeq,
+        chunkId: item.chunkId,
+        score,
+        exact,
+        text: buildSnippet(item.summary, 320),
+      });
+    }
+    compactHits.sort((a, b) => b.score - a.score || a.seqStart - b.seqStart);
+
+    const expandedFromCompact = compactHits.length
+      ? entries.filter((entry) => entry.seq >= compactHits[0].seqStart && entry.seq <= compactHits[0].seqEnd).slice(0, 24)
+      : [];
+
+    return {
+      raw: rawHits.slice(0, Math.max(1, limit)),
+      compact: compactHits.slice(0, Math.max(1, limit)),
+      expandedFromCompact,
+    };
+  };
+
   const collectBackendRecallHits = async (sessionId: string, query: string): Promise<RecallHit[]> => {
     const trimmedQuery = String(query ?? '').trim().toLowerCase();
     if (!sessionId || !trimmedQuery) return [];
@@ -2140,6 +2236,95 @@ export default function register(api: any) {
         for (const entry of windowEntries.slice(0, 20)) {
           const text = entry.text.replace(/\s+/g, ' ').trim();
           lines.push(`  - seq ${entry.seq} [${entry.sender}] ${text.length > 260 ? `${text.slice(0, 259)}…` : text}`);
+        }
+      }
+      return { text: lines.join('\n') };
+    },
+  });
+
+  api.registerCommand?.({
+    name: 'crag_session_quote',
+    description:
+      'Read-only exact/near-exact older session quote retrieval. Usage: /crag_session_quote [--session-id <id>] [--exact] <query|seq:<n>|seq:<start>-<end>>',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      const rawInput = Array.isArray(ctx?.args)
+        ? ctx.args.join(' ').trim()
+        : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.args ?? '').trim();
+      const exactMode = /(?:^|\s)--exact(?:\s|$)/i.test(rawInput);
+      const cleaned = rawInput.replace(/(?:^|\s)--exact(?:\s|$)/gi, ' ').trim();
+      const parsed = parseSessionArg(cleaned);
+      const target = String(parsed.query ?? '').trim();
+      if (!target) {
+        return {
+          text: 'Usage: /crag_session_quote [--session-id <id>] [--exact] <query|seq:<n>|seq:<start>-<end>>',
+        };
+      }
+      const resolved = resolveCtxSession(ctx);
+      const sessionId = parsed.explicitSessionId || resolved.sessionId;
+      if (!sessionId) return { text: 'No session id available yet. Provide --session-id <id>.' };
+      const entries = await readRawEntries(sessionId);
+      const seqRange = target.match(/^seq:(\d+)(?:-(\d+))?$/i);
+
+      const lines: string[] = [
+        'CognitiveRAG Session Quote',
+        `- sessionId: ${sessionId}`,
+        `- target: ${target}`,
+        `- exact mode: ${exactMode ? 'yes' : 'no'}`,
+      ];
+
+      if (seqRange) {
+        const start = Number.parseInt(seqRange[1], 10);
+        const end = Number.parseInt(seqRange[2] || seqRange[1], 10);
+        const low = Math.min(start, end);
+        const high = Math.max(start, end);
+        const windowEntries = entries.filter((entry) => entry.seq >= low && entry.seq <= high).slice(0, 40);
+        lines.push('- retrieval mode: seq-range');
+        lines.push(`- seq range: ${low}-${high}`);
+        lines.push(`- source: lossless_session_raw`);
+        lines.push(`- hits: ${windowEntries.length}`);
+        if (!windowEntries.length) {
+          lines.push('- none');
+        } else {
+          lines.push('- quotes:');
+          for (const entry of windowEntries) {
+            lines.push(`  - seq ${entry.seq} [${entry.sender}] ${buildSnippet(entry.text, 320)}`);
+          }
+        }
+        return { text: lines.join('\n') };
+      }
+
+      const quote = await collectSessionQuoteHits(sessionId, target, exactMode, 8);
+      lines.push('- retrieval mode: query');
+      lines.push(`- raw exact/near hits: ${quote.raw.length}`);
+      lines.push(`- compact summary hits: ${quote.compact.length}`);
+      lines.push(`- expanded raw evidence entries: ${quote.expandedFromCompact.length}`);
+
+      if (quote.raw.length) {
+        lines.push('- exact raw hits:');
+        for (const hit of quote.raw.slice(0, 8)) {
+          lines.push(
+            `  - [${hit.source}] seq ${hit.seqStart}-${hit.seqEnd} score=${hit.score} exact=${hit.exact ? 'yes' : 'no'} ${hit.text}`,
+          );
+        }
+      }
+
+      if (quote.compact.length) {
+        lines.push('- compact hits:');
+        for (const hit of quote.compact.slice(0, 6)) {
+          lines.push(
+            `  - [${hit.source}] ${hit.chunkId} seq ${hit.seqStart}-${hit.seqEnd} score=${hit.score} exact=${hit.exact ? 'yes' : 'no'} ${hit.text}`,
+          );
+        }
+      }
+
+      if (!quote.raw.length && !quote.compact.length) {
+        lines.push('- no matching session material found');
+      } else if (quote.expandedFromCompact.length) {
+        lines.push('- expanded raw evidence:');
+        for (const entry of quote.expandedFromCompact.slice(0, 8)) {
+          lines.push(`  - seq ${entry.seq} [${entry.sender}] ${buildSnippet(entry.text, 240)}`);
         }
       }
       return { text: lines.join('\n') };

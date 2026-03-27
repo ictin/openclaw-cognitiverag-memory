@@ -37,6 +37,7 @@ assert.ok(regs.commands.includes('crag_corpus_describe'), 'crag_corpus_describe 
 assert.ok(regs.commands.includes('crag_large_describe'), 'crag_large_describe present');
 assert.ok(regs.commands.includes('crag_large_search'), 'crag_large_search present');
 assert.ok(regs.commands.includes('crag_large_excerpt'), 'crag_large_excerpt present');
+assert.ok(regs.commands.includes('crag_session_quote'), 'crag_session_quote present');
 assert.ok(regs.commands.includes('crag_explain_memory'), 'crag_explain_memory present');
 assert.ok(!regs.commands.includes('crag-status'), 'crag-status absent');
 // Ensure the fake session/transcript methods were never called

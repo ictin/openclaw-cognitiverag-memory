@@ -18,6 +18,7 @@ assert(regs.commands.includes('crag_corpus_describe'), 'crag_corpus_describe com
 assert(regs.commands.includes('crag_large_describe'), 'crag_large_describe command present');
 assert(regs.commands.includes('crag_large_search'), 'crag_large_search command present');
 assert(regs.commands.includes('crag_large_excerpt'), 'crag_large_excerpt command present');
+assert(regs.commands.includes('crag_session_quote'), 'crag_session_quote command present');
 assert(regs.commands.includes('crag_explain_memory'), 'crag_explain_memory command present');
 assert(!regs.routes.find(r => r.includes('crag-smoke')), 'no crag-smoke route');
 console.log('registration tests passed');
