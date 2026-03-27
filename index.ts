@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import fsSync from 'node:fs';
+import { createHash } from 'node:crypto';
 import { summarizeFallback } from './lib/fallbackMemorySummarizer.js';
 
 const COG_RAG_BASE = 'http://127.0.0.1:8000';
@@ -270,10 +271,13 @@ type RecallHit = {
     | 'fallback_mirror_plugin'
     | 'fallback_mirror_workspace'
     | 'lossless_session_raw'
-    | 'lossless_session_compact';
+    | 'lossless_session_compact'
+    | 'corpus_chunk';
   text: string;
   sessionId?: string;
   chunkId?: string;
+  corpusPath?: string;
+  corpusTitle?: string;
 };
 
 type SessionPart = {
@@ -313,8 +317,42 @@ type CompactSessionStore = {
   items: CompactSessionItem[];
 };
 
+type CorpusDoc = {
+  docId: string;
+  sourcePath: string;
+  title: string;
+  ingestedAt: string;
+  charCount: number;
+  chunkCount: number;
+};
+
+type CorpusChunk = {
+  chunkId: string;
+  docId: string;
+  sourcePath: string;
+  title: string;
+  chunkIndex: number;
+  startOffset: number;
+  endOffset: number;
+  text: string;
+  ingestedAt: string;
+};
+
+type CorpusStore = {
+  version: 1;
+  updatedAt: string;
+  docs: CorpusDoc[];
+  chunks: CorpusChunk[];
+};
+
 const LOCAL_FRESH_TAIL_COUNT = 12;
 const LOCAL_COMPACT_CHUNK_SIZE = 8;
+const CORPUS_MAX_FILES_DEFAULT = 4;
+const CORPUS_MAX_FILES_LIMIT = 12;
+const CORPUS_MAX_FILE_BYTES = 512 * 1024;
+const CORPUS_MIN_FILE_CHARS = 120;
+const CORPUS_CHUNK_TARGET_CHARS = 900;
+const CORPUS_CHUNK_OVERLAP_CHARS = 120;
 
 function toSafeSessionFilePart(sessionId: string): string {
   const id = String(sessionId ?? '').trim() || 'unknown-session';
@@ -362,6 +400,67 @@ function summarizeCompactChunk(chunk: RawSessionEntry[]): { summary: string; sam
     summary: summary || '(no text in this chunk)',
     sample,
   };
+}
+
+function toHashId(input: string): string {
+  return createHash('sha1').update(String(input ?? '')).digest('hex').slice(0, 16);
+}
+
+function deriveCorpusTitle(sourcePath: string, text: string): string {
+  const firstLine = String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length >= 8 && line.length <= 160);
+  if (firstLine) return firstLine;
+  const base = path.basename(sourcePath);
+  const withoutExt = base.replace(/\.[a-zA-Z0-9]+$/, '').trim();
+  return withoutExt || base || 'Untitled Corpus Document';
+}
+
+function tokenizeQuery(input: string): string[] {
+  return Array.from(
+    new Set(
+      String(input ?? '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/i)
+        .map((part) => part.trim())
+        .filter((part) => part.length >= 3),
+    ),
+  ).slice(0, 24);
+}
+
+function buildCorpusChunks(text: string): Array<{ startOffset: number; endOffset: number; text: string }> {
+  const normalized = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+  const chunks: Array<{ startOffset: number; endOffset: number; text: string }> = [];
+  let cursor = 0;
+  while (cursor < normalized.length) {
+    const remaining = normalized.length - cursor;
+    const target = Math.min(CORPUS_CHUNK_TARGET_CHARS, remaining);
+    let end = cursor + target;
+    if (end < normalized.length) {
+      const lookBackStart = Math.max(cursor + Math.floor(target * 0.55), end - 220);
+      const breakAtNewline = normalized.lastIndexOf('\n', end);
+      const breakAtSentence = Math.max(
+        normalized.lastIndexOf('. ', end),
+        normalized.lastIndexOf('! ', end),
+        normalized.lastIndexOf('? ', end),
+      );
+      if (breakAtNewline >= lookBackStart) end = breakAtNewline + 1;
+      else if (breakAtSentence >= lookBackStart) end = breakAtSentence + 2;
+    }
+    const snippet = normalized.slice(cursor, end).trim();
+    if (snippet) {
+      chunks.push({
+        startOffset: cursor,
+        endOffset: end,
+        text: snippet,
+      });
+    }
+    if (end >= normalized.length) break;
+    cursor = Math.max(0, end - CORPUS_CHUNK_OVERLAP_CHARS);
+  }
+  return chunks;
 }
 
 const defaultHealthState = (): HealthState => ({
@@ -414,6 +513,8 @@ export default function register(api: any) {
   const sessionMemoryDir = path.join(pluginRoot, 'session_memory');
   const sessionExportDir = path.join(pluginRoot, 'session_exports');
   const sessionKeyMapFile = path.join(sessionMemoryDir, 'session_key_map.json');
+  const corpusMemoryDir = path.join(pluginRoot, 'corpus_memory');
+  const corpusIndexFile = path.join(corpusMemoryDir, 'corpus_index.json');
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
   const observedSessionIdsByKey = new Map<string, string>();
   let lastObservedSessionId = '';
@@ -689,6 +790,210 @@ export default function register(api: any) {
   const ensureSessionStoreDirs = async () => {
     await fs.mkdir(sessionMemoryDir, { recursive: true });
     await fs.mkdir(sessionExportDir, { recursive: true });
+  };
+
+  const ensureCorpusStoreDir = async () => {
+    await fs.mkdir(corpusMemoryDir, { recursive: true });
+  };
+
+  const readCorpusStore = async (): Promise<CorpusStore> => {
+    try {
+      const raw = await fs.readFile(corpusIndexFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') throw new Error('invalid corpus store');
+      const docs = Array.isArray(parsed.docs) ? parsed.docs : [];
+      const chunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
+      return {
+        version: 1,
+        updatedAt: String(parsed.updatedAt ?? new Date().toISOString()),
+        docs: docs.filter((v: any) => v && typeof v === 'object') as CorpusDoc[],
+        chunks: chunks.filter((v: any) => v && typeof v === 'object') as CorpusChunk[],
+      };
+    } catch {
+      return { version: 1, updatedAt: new Date().toISOString(), docs: [], chunks: [] };
+    }
+  };
+
+  const writeCorpusStore = async (store: CorpusStore) => {
+    await ensureCorpusStoreDir();
+    const next: CorpusStore = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      docs: Array.isArray(store?.docs) ? store.docs : [],
+      chunks: Array.isArray(store?.chunks) ? store.chunks : [],
+    };
+    await fs.writeFile(corpusIndexFile, JSON.stringify(next, null, 2));
+    return next;
+  };
+
+  const collectCorpusFiles = async (rootDir: string, maxFiles: number): Promise<string[]> => {
+    const root = path.resolve(rootDir);
+    const allowedExt = new Set(['.txt', '.md', '.markdown']);
+    const stack = [root];
+    const files: string[] = [];
+    const visited = new Set<string>();
+    while (stack.length && files.length < maxFiles) {
+      const dir = String(stack.pop() ?? '');
+      if (!dir || visited.has(dir)) continue;
+      visited.add(dir);
+      let entries: any[] = [];
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      const dirs: string[] = [];
+      for (const entry of entries) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          const name = entry.name.toLowerCase();
+          if (name.startsWith('.') || name === 'node_modules' || name === '__pycache__') continue;
+          dirs.push(abs);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        if (!allowedExt.has(path.extname(entry.name).toLowerCase())) continue;
+        try {
+          const st = await fs.stat(abs);
+          if (!Number.isFinite(st.size) || st.size > CORPUS_MAX_FILE_BYTES || st.size < CORPUS_MIN_FILE_CHARS) continue;
+          files.push(abs);
+          if (files.length >= maxFiles) break;
+        } catch {
+          // best-effort only
+        }
+      }
+      dirs.sort((a, b) => a.localeCompare(b));
+      for (const next of dirs.reverse()) stack.push(next);
+    }
+    return files;
+  };
+
+  const upsertCorpusDocuments = async (filePaths: string[]) => {
+    const store = await readCorpusStore();
+    const now = new Date().toISOString();
+    const dedupedPaths = Array.from(new Set(filePaths.map((p) => path.resolve(p))));
+    const nextDocs = [...store.docs];
+    const nextChunks = [...store.chunks];
+    const ingested: Array<{ sourcePath: string; docId: string; title: string; chunkCount: number; charCount: number }> = [];
+    const skipped: Array<{ sourcePath: string; reason: string }> = [];
+
+    for (const sourcePath of dedupedPaths) {
+      let text = '';
+      try {
+        const stat = await fs.stat(sourcePath);
+        if (!Number.isFinite(stat.size) || stat.size > CORPUS_MAX_FILE_BYTES) {
+          skipped.push({ sourcePath, reason: 'too_large_or_invalid_size' });
+          continue;
+        }
+        text = await fs.readFile(sourcePath, 'utf8');
+      } catch (e: any) {
+        skipped.push({ sourcePath, reason: `read_failed:${String(e?.message ?? e)}` });
+        continue;
+      }
+      const normalized = String(text ?? '').replace(/\r\n/g, '\n').trim();
+      if (normalized.length < CORPUS_MIN_FILE_CHARS) {
+        skipped.push({ sourcePath, reason: 'too_short' });
+        continue;
+      }
+      const docId = toHashId(sourcePath);
+      const title = deriveCorpusTitle(sourcePath, normalized);
+      const chunkParts = buildCorpusChunks(normalized);
+      if (!chunkParts.length) {
+        skipped.push({ sourcePath, reason: 'no_chunks' });
+        continue;
+      }
+      for (let i = nextDocs.length - 1; i >= 0; i -= 1) {
+        if (String(nextDocs[i]?.docId ?? '') === docId) nextDocs.splice(i, 1);
+      }
+      for (let i = nextChunks.length - 1; i >= 0; i -= 1) {
+        if (String(nextChunks[i]?.docId ?? '') === docId) nextChunks.splice(i, 1);
+      }
+      nextDocs.push({
+        docId,
+        sourcePath,
+        title,
+        ingestedAt: now,
+        charCount: normalized.length,
+        chunkCount: chunkParts.length,
+      });
+      chunkParts.forEach((part, idx) => {
+        nextChunks.push({
+          chunkId: `${docId}:${idx + 1}`,
+          docId,
+          sourcePath,
+          title,
+          chunkIndex: idx,
+          startOffset: part.startOffset,
+          endOffset: part.endOffset,
+          text: part.text,
+          ingestedAt: now,
+        });
+      });
+      ingested.push({
+        sourcePath,
+        docId,
+        title,
+        chunkCount: chunkParts.length,
+        charCount: normalized.length,
+      });
+    }
+
+    const saved = await writeCorpusStore({
+      version: 1,
+      updatedAt: now,
+      docs: nextDocs.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath)),
+      chunks: nextChunks,
+    });
+    return {
+      ingested,
+      skipped,
+      totalDocs: saved.docs.length,
+      totalChunks: saved.chunks.length,
+      corpusIndexFile,
+    };
+  };
+
+  const collectCorpusRecallHits = async (query: string, limit = 8): Promise<RecallHit[]> => {
+    const q = String(query ?? '').trim().toLowerCase();
+    if (!q) return [];
+    const qTokens = tokenizeQuery(q);
+    const store = await readCorpusStore();
+    const scored = store.chunks
+      .map((chunk) => {
+        const hay = String(chunk?.text ?? '').toLowerCase();
+        if (!hay) return null;
+        const titleHay = String(chunk?.title ?? '').toLowerCase();
+        const pathHay = String(chunk?.sourcePath ?? '').toLowerCase();
+        const exactMatch = hay.includes(q) || titleHay.includes(q) || pathHay.includes(q);
+        let score = 0;
+        if (hay.includes(q)) score += 200;
+        if (titleHay.includes(q)) score += 90;
+        if (pathHay.includes(q)) score += 60;
+        let overlap = 0;
+        for (const tok of qTokens) {
+          if (hay.includes(tok)) overlap += 1;
+        }
+        const minOverlap = qTokens.length >= 3 ? 2 : 1;
+        if (!exactMatch && overlap < minOverlap) return null;
+        score += overlap * 12;
+        if (!exactMatch && score < 30) return null;
+        return { chunk, score };
+      })
+      .filter((entry): entry is { chunk: CorpusChunk; score: number } => !!entry)
+      .sort((a, b) => b.score - a.score || a.chunk.sourcePath.localeCompare(b.chunk.sourcePath) || a.chunk.chunkIndex - b.chunk.chunkIndex)
+      .slice(0, Math.max(1, limit));
+
+    return scored.map(({ chunk }) => {
+      const normalized = String(chunk.text ?? '').replace(/\s+/g, ' ').trim();
+      const excerpt = normalized.length > 240 ? `${normalized.slice(0, 239)}…` : normalized;
+      return {
+        source: 'corpus_chunk',
+        chunkId: chunk.chunkId,
+        corpusPath: chunk.sourcePath,
+        corpusTitle: chunk.title,
+        text: `${chunk.title} | ${chunk.sourcePath} | ${chunk.chunkId} | ${excerpt}`,
+      };
+    });
   };
 
   const rebuildCompaction = async (sessionId: string): Promise<CompactSessionStore> => {
@@ -1012,6 +1317,139 @@ export default function register(api: any) {
     return { explicitSessionId: String(m[1] ?? '').trim(), query: String(m[2] ?? '').trim() };
   };
 
+  const parseCorpusIngestArgs = (rawInput: string) => {
+    const raw = String(rawInput ?? '');
+    const parsed = {
+      root: '/mnt/g/@Cursuri',
+      maxFiles: CORPUS_MAX_FILES_DEFAULT,
+      files: [] as string[],
+    };
+    const applyOpt = (re: RegExp, onValue: (value: string) => void) => {
+      let m: RegExpExecArray | null = null;
+      while ((m = re.exec(raw))) {
+        const value = String(m[1] ?? m[2] ?? m[3] ?? '').trim();
+        if (value) onValue(value);
+      }
+    };
+    applyOpt(/--root\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))/gi, (value) => {
+      parsed.root = value;
+    });
+    applyOpt(/--max-files\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))/gi, (value) => {
+      const num = Number.parseInt(value, 10);
+      if (Number.isFinite(num) && num > 0) parsed.maxFiles = Math.min(CORPUS_MAX_FILES_LIMIT, Math.max(1, num));
+    });
+    applyOpt(/--file\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))/gi, (value) => {
+      parsed.files.push(path.resolve(value));
+    });
+    parsed.files = Array.from(new Set(parsed.files));
+    return parsed;
+  };
+
+  api.registerCommand?.({
+    name: 'crag_corpus_ingest',
+    description:
+      'Ingest a bounded corpus subset into plugin-local chunked storage with provenance. Usage: /crag_corpus_ingest [--root <path>] [--max-files <n>] [--file <path>]...',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      const raw = Array.isArray(ctx?.args)
+        ? ctx.args.join(' ').trim()
+        : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.args ?? '').trim();
+      const parsed = parseCorpusIngestArgs(raw);
+      const maxFiles = Math.min(CORPUS_MAX_FILES_LIMIT, Math.max(1, Number(parsed.maxFiles ?? CORPUS_MAX_FILES_DEFAULT)));
+      const sourceFiles = parsed.files.length ? parsed.files : await collectCorpusFiles(parsed.root, maxFiles);
+      if (!sourceFiles.length) {
+        return {
+          text: [
+            'CognitiveRAG Corpus Ingest',
+            `- root: ${parsed.root}`,
+            `- max files: ${maxFiles}`,
+            '- selected files: 0',
+            '- result: no eligible files found',
+          ].join('\n'),
+        };
+      }
+      const selected = sourceFiles.slice(0, maxFiles);
+      const result = await upsertCorpusDocuments(selected);
+      const lines = [
+        'CognitiveRAG Corpus Ingest',
+        `- root: ${parsed.root}`,
+        `- max files: ${maxFiles}`,
+        `- selected files: ${selected.length}`,
+        `- ingested files: ${result.ingested.length}`,
+        `- skipped files: ${result.skipped.length}`,
+        `- total corpus docs: ${result.totalDocs}`,
+        `- total corpus chunks: ${result.totalChunks}`,
+        `- corpus index: ${result.corpusIndexFile}`,
+      ];
+      if (result.ingested.length) {
+        lines.push('- ingested:');
+        for (const doc of result.ingested.slice(0, 8)) {
+          lines.push(`  - ${doc.title} | ${doc.sourcePath} | chunks=${doc.chunkCount} | chars=${doc.charCount}`);
+        }
+      }
+      if (result.skipped.length) {
+        lines.push('- skipped:');
+        for (const skip of result.skipped.slice(0, 8)) {
+          lines.push(`  - ${skip.sourcePath} | ${skip.reason}`);
+        }
+      }
+      return { text: lines.join('\n') };
+    },
+  });
+
+  api.registerCommand?.({
+    name: 'crag_corpus_search',
+    description: 'Read-only corpus chunk retrieval with provenance. Usage: /crag_corpus_search <query>',
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: any) => {
+      const query = Array.isArray(ctx?.args)
+        ? ctx.args.join(' ').trim()
+        : String(ctx?.args?.text ?? ctx?.args?.message ?? ctx?.args?.value ?? ctx?.args ?? '').trim();
+      if (!query) return { text: 'Usage: /crag_corpus_search <query>' };
+      const hits = await collectCorpusRecallHits(query, 8);
+      const lines = [
+        'CognitiveRAG Corpus Search',
+        `- query: ${query}`,
+        `- hits: ${hits.length}`,
+      ];
+      if (!hits.length) {
+        lines.push('- no matching corpus chunks');
+      } else {
+        lines.push('- matches:');
+        for (const hit of hits) {
+          lines.push(`  - [${hit.source}] ${hit.text}`);
+        }
+      }
+      return { text: lines.join('\n') };
+    },
+  });
+
+  api.registerCommand?.({
+    name: 'crag_corpus_describe',
+    description: 'Read-only corpus index summary with provenance coverage.',
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => {
+      const store = await readCorpusStore();
+      const lines = [
+        'CognitiveRAG Corpus Describe',
+        `- docs: ${store.docs.length}`,
+        `- chunks: ${store.chunks.length}`,
+        `- updated: ${store.updatedAt}`,
+        `- corpus index: ${corpusIndexFile}`,
+      ];
+      if (store.docs.length) {
+        lines.push('- docs:');
+        for (const doc of store.docs.slice(0, 8)) {
+          lines.push(`  - ${doc.title} | ${doc.sourcePath} | chunks=${doc.chunkCount}`);
+        }
+      }
+      return { text: lines.join('\n') };
+    },
+  });
+
   api.registerCommand?.({
     name: 'crag_recall',
     description:
@@ -1050,8 +1488,9 @@ export default function register(api: any) {
         }
         if (localHits.length >= 8) break;
       }
+      const corpusHits = await collectCorpusRecallHits(query, 8);
       const mirrorHits = await collectMirrorRecallHits(query);
-      const combined = [...backendHits, ...localHits, ...mirrorHits].slice(0, 8);
+      const combined = [...backendHits, ...localHits, ...corpusHits, ...mirrorHits].slice(0, 8);
       const lines = [
         'CognitiveRAG Recall',
         `- query: ${query}`,
@@ -1061,6 +1500,7 @@ export default function register(api: any) {
         `- sessionId source: ${sessionIdSource}`,
         `- backend hits: ${backendHits.length}`,
         `- local lossless hits: ${localHits.length}`,
+        `- corpus hits: ${corpusHits.length}`,
         `- fallback mirror hits: ${mirrorHits.length}`,
       ];
       if (!combined.length) {
@@ -1241,12 +1681,14 @@ export default function register(api: any) {
         '- cognitiverag-memory plugin loaded: yes',
         '- backend/session memory: used via /session_append_message, /session_upsert_context_item, /session_assemble_context',
         '- local lossless session layer: plugin-owned raw + compacted session store under session_memory/',
+        '- corpus layer: plugin-owned chunked corpus index under corpus_memory/ (ingest via /crag_corpus_ingest)',
         `- fallback mirror MEMORY.md active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
         '- durable facts: selective promoted notes (exact facts) plus optional summaries',
         '- source truth:',
         '  - backend_session_memory: CRAG backend/session context',
         '  - lossless_session_raw: plugin-local exact message storage',
         '  - lossless_session_compact: plugin-local compacted history summaries with chunk ids',
+        '  - corpus_chunk: plugin-local corpus retrieval chunk with file/chunk provenance',
         '  - fallback_mirror_plugin: plugin-local MEMORY.md',
         '  - fallback_mirror_workspace: workspace MEMORY.md',
       ];
@@ -1484,7 +1926,7 @@ export default function register(api: any) {
             : fallbackPrompt;
         }
         const architecturePrompt =
-          'Memory architecture truth: cognitiverag-memory is active. Backend/session memory is primary CRAG context; plugin-local lossless session layer stores exact + compacted history; MEMORY.md fallback mirror is auxiliary.';
+          'Memory architecture truth: cognitiverag-memory is active. Backend/session memory is primary CRAG context; plugin-local lossless session layer stores exact + compacted history; corpus_memory provides chunked file retrieval with provenance; MEMORY.md fallback mirror is auxiliary.';
         systemPromptAddition = systemPromptAddition
           ? `${systemPromptAddition}\n\n${architecturePrompt}`
           : architecturePrompt;

@@ -12,6 +12,9 @@ assert(regs.routes.filter(r => r === '/cognitiverag-memory/status').length === 1
 assert(regs.routes.filter(r => r === '/cognitiverag-memory/health').length === 1, 'health route count');
 assert(regs.commands.includes('crag_status'), 'crag_status command present');
 assert(regs.commands.includes('crag_recall'), 'crag_recall command present');
+assert(regs.commands.includes('crag_corpus_ingest'), 'crag_corpus_ingest command present');
+assert(regs.commands.includes('crag_corpus_search'), 'crag_corpus_search command present');
+assert(regs.commands.includes('crag_corpus_describe'), 'crag_corpus_describe command present');
 assert(regs.commands.includes('crag_explain_memory'), 'crag_explain_memory command present');
 assert(!regs.routes.find(r => r.includes('crag-smoke')), 'no crag-smoke route');
 console.log('registration tests passed');

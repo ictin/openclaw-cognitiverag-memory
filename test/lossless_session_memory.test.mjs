@@ -107,7 +107,7 @@ assert.match(assembled.systemPromptAddition, /Compacted session history/i, 'asse
 assert.ok(Number.isFinite(assembled?.totalTokens), 'assemble totalTokens should be finite');
 
 const cmd = Object.fromEntries(regs.commands.map((c) => [c.name, c]));
-for (const required of ['crag_session_search', 'crag_session_describe', 'crag_session_expand', 'crag_session_export', 'crag_recall', 'crag_explain_memory']) {
+for (const required of ['crag_session_search', 'crag_session_describe', 'crag_session_expand', 'crag_session_export', 'crag_recall', 'crag_explain_memory', 'crag_corpus_ingest', 'crag_corpus_search', 'crag_corpus_describe']) {
   assert.ok(cmd[required] && typeof cmd[required].handler === 'function', `${required} command should register`);
 }
 

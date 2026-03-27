@@ -109,6 +109,7 @@ const explain = await explainCmd.handler({});
 assert.equal(typeof explain?.text, 'string', 'crag_explain_memory must return text');
 assert.match(explain.text, /cognitiverag-memory plugin loaded:\s*yes/i, 'truth text must confirm active plugin');
 assert.match(explain.text, /backend\/session memory/i, 'truth text must mention backend/session memory');
+assert.match(explain.text, /corpus layer/i, 'truth text must mention corpus layer');
 assert.doesNotMatch(explain.text, /no cognitiverag plugin/i, 'truth text must not deny plugin presence');
 
 restoreFetch();
