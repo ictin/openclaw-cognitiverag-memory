@@ -284,6 +284,7 @@ type RecallHit = {
 };
 
 type RecallIntent = 'session' | 'corpus' | 'general';
+type NaturalAnswerIntent = 'memory_summary' | 'architecture' | 'corpus' | 'chat_recall' | 'none';
 
 type RankedRecallHit = {
   hit: RecallHit;
@@ -485,6 +486,32 @@ function tokenizeQuery(input: string): string[] {
   ).slice(0, 24);
 }
 
+function normalizeNaturalUserQuery(input: string): string {
+  const raw = String(input ?? '').trim();
+  if (!raw) return '';
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const filtered = lines.filter((line) => {
+    if (line.startsWith('Sender (untrusted metadata):')) return false;
+    if (line.startsWith('```')) return false;
+    if (line === '{' || line === '}' || line.startsWith('"') || line.endsWith('{') || line.endsWith('}')) return false;
+    if (/^\[[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}/.test(line)) return true;
+    return true;
+  });
+  for (let i = filtered.length - 1; i >= 0; i -= 1) {
+    const line = filtered[i];
+    const m = line.match(/^\[[^\]]+\]\s*(.+)$/);
+    const candidate = (m ? m[1] : line).trim();
+    if (!candidate) continue;
+    if (candidate === '{' || candidate === '}') continue;
+    if (/^"[^"]*":/.test(candidate)) continue;
+    return candidate;
+  }
+  return raw.replace(/\s+/g, ' ').trim();
+}
+
 function detectRecallIntent(query: string): RecallIntent {
   const q = String(query ?? '').toLowerCase();
   if (!q) return 'general';
@@ -515,6 +542,59 @@ function detectRecallIntent(query: string): RecallIntent {
     if (q.includes(signal)) return 'corpus';
   }
   return 'general';
+}
+
+function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
+  const q = normalizeNaturalUserQuery(query).toLowerCase().trim();
+  if (!q) return 'none';
+
+  if (
+    q.includes('what do you remember') ||
+    q.includes('what are you remembering') ||
+    q.includes('what do you know about me') ||
+    q.includes('how is your memory')
+  ) {
+    return 'memory_summary';
+  }
+
+  if (
+    q.includes('are you using crag') ||
+    q.includes('where is this stored') ||
+    q.includes('what is stored in memory.md') ||
+    q.includes('what comes from backend/session memory') ||
+    q.includes('where did this answer come from')
+  ) {
+    return 'architecture';
+  }
+
+  if (
+    q.includes('what did we say earlier') ||
+    q.includes('what was the token') ||
+    q.includes('from before') ||
+    q.includes('quote the earlier') ||
+    q.includes('we discussed')
+  ) {
+    return 'chat_recall';
+  }
+
+  if (
+    q.includes('what can you tell me about') ||
+    q.includes('synopsis') ||
+    q.includes('book') ||
+    q.includes('chapter') ||
+    q.includes('youtube secrets') ||
+    q.includes('from corpus')
+  ) {
+    return 'corpus';
+  }
+
+  return 'none';
+}
+
+function looksLikeOpaqueToken(value: string): boolean {
+  const text = String(value ?? '').trim();
+  if (!text) return false;
+  return /[A-Z0-9]{6,}[-_][A-Z0-9-]{4,}/.test(text) || /^[A-Z0-9_-]{18,}$/.test(text);
 }
 
 function sourceBaseWeight(source: RecallHit['source'], intent: RecallIntent): number {
@@ -1679,6 +1759,188 @@ export default function register(api: any) {
     return out.slice(0, 8);
   };
 
+  const latestUserQueryFromMessages = (messages: any[]): string => {
+    if (!Array.isArray(messages)) return '';
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      if (String(msg?.role ?? '').toLowerCase() !== 'user') continue;
+      const text = normalizeNaturalUserQuery(extractTextContent(msg?.content));
+      if (text) return text;
+    }
+    return '';
+  };
+
+  const collectMemoryBullets = async (filePath: string): Promise<string[]> => {
+    try {
+      const text = await fs.readFile(filePath, 'utf8');
+      return text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('-'))
+        .map((line) => line.replace(/^\-\s*/, '').trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+
+  const collectMirrorLinkedCorpusHits = async (query: string, limit = 4): Promise<RecallHit[]> => {
+    const q = normalizeNaturalUserQuery(query).toLowerCase().trim();
+    if (!q) return [];
+    const qTokens = tokenizeQuery(q);
+    const allBullets = [
+      ...(await collectMemoryBullets(memoryFile)),
+      ...(await collectMemoryBullets(workspaceMemoryFile)),
+    ];
+    const refs = allBullets
+      .map((line) => {
+        const sourceMatch = line.match(/SOURCE_PATH=([^;]+)(?:;|$)/i);
+        if (!sourceMatch) return null;
+        const sourcePath = String(sourceMatch[1] ?? '').trim();
+        if (!sourcePath) return null;
+        const titleMatch = line.match(/TITLE=([^;]+)(?:;|$)/i);
+        const title = String(titleMatch?.[1] ?? path.basename(sourcePath)).trim();
+        return { sourcePath, title };
+      })
+      .filter((v): v is { sourcePath: string; title: string } => !!v);
+
+    const seen = new Set<string>();
+    const out: RecallHit[] = [];
+    for (const ref of refs) {
+      const key = `${ref.sourcePath}::${ref.title}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const titleHay = ref.title.toLowerCase();
+      const pathHay = ref.sourcePath.toLowerCase();
+      const titlePathMatch = queryMatchesText(q, `${titleHay}\n${pathHay}`, qTokens);
+      let text = '';
+      try {
+        text = await fs.readFile(ref.sourcePath, 'utf8');
+      } catch {
+        continue;
+      }
+      const body = String(text ?? '').replace(/\r\n/g, '\n').trim();
+      if (!body) continue;
+      const bodyHay = body.toLowerCase();
+      const bodyMatch = queryMatchesText(q, bodyHay, qTokens);
+      if (!titlePathMatch && !bodyMatch) continue;
+      const excerpt = buildSnippet(body, 340);
+      out.push({
+        source: 'corpus_chunk',
+        chunkId: `mirror-path:${toHashId(ref.sourcePath).slice(0, 8)}`,
+        corpusPath: ref.sourcePath,
+        corpusTitle: ref.title,
+        text: `${ref.title} | ${ref.sourcePath} | mirror-linked excerpt | ${excerpt}`,
+      });
+      if (out.length >= Math.max(1, limit)) break;
+    }
+    return out;
+  };
+
+  const buildNaturalRoutingPrompt = async (sessionId: string, userQuery: string): Promise<string> => {
+    const intent = detectNaturalAnswerIntent(userQuery);
+    if (intent === 'none') return '';
+
+      const lines: string[] = [`Natural answer routing intent: ${intent}`];
+    const query = normalizeNaturalUserQuery(userQuery);
+
+    if (intent === 'memory_summary') {
+      const pluginBullets = await collectMemoryBullets(memoryFile);
+      const workspaceBullets = await collectMemoryBullets(workspaceMemoryFile);
+      const mergedBullets = Array.from(new Set([...pluginBullets, ...workspaceBullets]));
+      const nonToken = mergedBullets.filter((line) => !looksLikeOpaqueToken(line));
+      const tokenCount = mergedBullets.length - nonToken.length;
+      const compacted = (await readCompactStore(sessionId)) ?? (await rebuildCompaction(sessionId));
+      const rawEntries = await readRawEntries(sessionId);
+      const corpusStore = await readCorpusStore();
+      const largeStore = await readLargeFileStore();
+      const titles = Array.from(
+        new Set(
+          [...corpusStore.docs.map((d) => d.title), ...largeStore.docs.map((d) => d.title)]
+            .map((t) => String(t ?? '').trim())
+            .filter(Boolean),
+        ),
+      ).slice(0, 4);
+
+      lines.push('Auto memory summary evidence:');
+      lines.push(`- durable notes (non-token): ${nonToken.length}`);
+      if (tokenCount > 0) lines.push(`- opaque token facts available on request: ${tokenCount}`);
+      nonToken.slice(0, 4).forEach((line) => lines.push(`- durable highlight: ${buildSnippet(line, 140)}`));
+      lines.push(`- session raw entries: ${rawEntries.length}`);
+      lines.push(`- session compacted chunks: ${compacted.items.length}`);
+      if (titles.length) {
+        lines.push('- known corpus/book titles:');
+        titles.forEach((t) => lines.push(`  - ${buildSnippet(t, 100)}`));
+      }
+      lines.push(
+        'Answer contract: provide a layered summary (profile/preferences, durable facts, recent session context, corpus/books). Do not dump raw token lists unless user explicitly asks for exact tokens.',
+      );
+      const recentMeaningful = rawEntries
+        .map((entry) => buildSnippet(entry.text, 160))
+        .filter((line) => line && !looksLikeOpaqueToken(line) && !line.toLowerCase().includes('sender (untrusted metadata)'))
+        .slice(-4);
+      if (recentMeaningful.length) {
+        lines.push('- recent meaningful session snippets:');
+        recentMeaningful.forEach((line) => lines.push(`  - ${line}`));
+      }
+      lines.push('Answer quality rule: include at most 2 opaque token examples in normal summaries, and prioritize meaningful facts over storage internals.');
+      lines.push('Hard format rule: use exactly 4 sections titled Profile/Preferences, Durable Facts, Recent Session Context, and Corpus/Books.');
+    } else if (intent === 'architecture') {
+      lines.push('Auto architecture truth contract:');
+      lines.push('- cognitiverag-memory is active context engine when slot says so.');
+      lines.push('- distinguish backend/session CRAG memory vs lossless local session layer vs fallback MEMORY.md mirror vs corpus/large-file retrieval.');
+      lines.push('- for current answer, include a short source-basis sentence.');
+    } else if (intent === 'corpus') {
+      const largeHits = await collectLargeFileRecallHits(query, 4);
+      const corpusHits = await collectCorpusRecallHits(query, 4);
+      const mirrorLinkedHits = await collectMirrorLinkedCorpusHits(query, 3);
+      const { ranked } = rankRecallHits(query, [...largeHits, ...corpusHits, ...mirrorLinkedHits]);
+      lines.push('Auto corpus evidence:');
+      lines.push(`- large-file hits: ${largeHits.length}`);
+      lines.push(`- corpus chunk hits: ${corpusHits.length}`);
+      lines.push(`- mirror-linked corpus hits: ${mirrorLinkedHits.length}`);
+      ranked.slice(0, 4).forEach((item) => {
+        const pathPart = item.hit.corpusPath ? ` | ${item.hit.corpusPath}` : '';
+        const chunkPart = item.hit.chunkId ? ` | ${item.hit.chunkId}` : '';
+        const spanPart =
+          Number.isFinite(item.hit.spanStart) && Number.isFinite(item.hit.spanEnd)
+            ? ` | span ${item.hit.spanStart}-${item.hit.spanEnd}`
+            : '';
+        lines.push(
+          `- ${item.hit.source}${pathPart}${chunkPart}${spanPart} | score=${item.score} | ${buildSnippet(item.hit.text, 170)}`,
+        );
+      });
+      lines.push(
+        'Answer contract: if corpus evidence exists, answer from retrieved excerpts and cite source path/chunk/span. If only metadata exists, state that honestly.',
+      );
+      const top = ranked[0]?.hit;
+      if (top) {
+        lines.push(
+          `Top corpus evidence to use now: ${top.source} | ${top.corpusTitle ?? 'unknown-title'} | ${top.corpusPath ?? 'unknown-path'} | ${
+            top.chunkId ?? 'no-chunk'
+          } | ${buildSnippet(top.text, 220)}`,
+        );
+      }
+      lines.push('Do not claim corpus content is unavailable when auto corpus evidence contains excerpt hits.');
+    } else if (intent === 'chat_recall') {
+      const quote = await collectSessionQuoteHits(sessionId, query, false, 6);
+      lines.push('Auto session recall evidence:');
+      lines.push(`- raw quote hits: ${quote.raw.length}`);
+      lines.push(`- compact quote hits: ${quote.compact.length}`);
+      quote.raw.slice(0, 4).forEach((hit) => {
+        lines.push(`- raw seq ${hit.seqStart}-${hit.seqEnd} score=${hit.score} exact=${hit.exact ? 'yes' : 'no'} ${hit.text}`);
+      });
+      quote.compact.slice(0, 2).forEach((hit) => {
+        lines.push(`- compact ${hit.chunkId} seq ${hit.seqStart}-${hit.seqEnd} score=${hit.score}`);
+      });
+      lines.push('Answer contract: answer naturally, and include source basis (session raw vs compact) when recall confidence depends on it.');
+    }
+
+    const prompt = lines.join('\n').trim();
+    if (!prompt) return '';
+    return prompt.length > 2600 ? `${prompt.slice(0, 2599)}…` : prompt;
+  };
+
   api.registerCommand?.({
     name: 'remember',
     description: 'Append an explicit durable memory note to the local fallback MEMORY.md.',
@@ -2591,6 +2853,8 @@ export default function register(api: any) {
 
         const shaped = shapeAssembleResponse(assemblyRes, budget);
         let { messages, systemPromptAddition, estimatedTokens, totalTokens } = shaped;
+        let naturalRoutingMessage: any = null;
+        let naturalIntent: NaturalAnswerIntent = 'none';
         try {
           const compact = (await readCompactStore(sessionId)) ?? (await rebuildCompaction(sessionId));
           if (Array.isArray(compact?.items) && compact.items.length) {
@@ -2626,7 +2890,27 @@ export default function register(api: any) {
             await writeHealthState({ fallbackMemoryMirrorActive: true });
           }
         if (fallbackSummary) {
-          const fallbackPrompt = `Fallback memory mirror (durable user-noted facts):\n${fallbackSummary}`;
+          const latestUserQueryForIntent = latestUserQueryFromMessages(inputMessages);
+          naturalIntent = latestUserQueryForIntent ? detectNaturalAnswerIntent(latestUserQueryForIntent) : 'none';
+          let fallbackPrompt = `Fallback memory mirror (durable user-noted facts):\n${fallbackSummary}`;
+          if (naturalIntent === 'corpus') {
+            fallbackPrompt =
+              'Fallback memory mirror note: mirror metadata exists, but for corpus/book questions prioritize corpus/large-file/session evidence over mirror token lists.';
+          } else if (naturalIntent === 'memory_summary') {
+            const mirrorBullets = Array.from(
+              new Set([...(await collectMemoryBullets(memoryFile)), ...(await collectMemoryBullets(workspaceMemoryFile))]),
+            );
+            const nonTokenBullets = mirrorBullets.filter((line) => !looksLikeOpaqueToken(line)).slice(0, 4);
+            const tokenCount = Math.max(0, mirrorBullets.length - nonTokenBullets.length);
+            const compact = [
+              'Fallback memory mirror (summary only):',
+              ...nonTokenBullets.map((line) => `- ${buildSnippet(line, 160)}`),
+              tokenCount > 0 ? `- opaque tokens available on explicit request: ${tokenCount}` : '',
+            ]
+              .filter(Boolean)
+              .join('\n');
+            fallbackPrompt = compact;
+          }
           systemPromptAddition = systemPromptAddition
             ? `${systemPromptAddition}\n\n${fallbackPrompt}`
             : fallbackPrompt;
@@ -2636,6 +2920,24 @@ export default function register(api: any) {
         systemPromptAddition = systemPromptAddition
           ? `${systemPromptAddition}\n\n${architecturePrompt}`
           : architecturePrompt;
+
+        const latestUserQuery = latestUserQueryFromMessages(inputMessages);
+        if (latestUserQuery) {
+          naturalIntent = detectNaturalAnswerIntent(latestUserQuery);
+          const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
+          if (naturalRoutingPrompt) {
+            systemPromptAddition = systemPromptAddition
+              ? `${systemPromptAddition}\n\n${naturalRoutingPrompt}`
+              : naturalRoutingPrompt;
+            naturalRoutingMessage = {
+              role: 'system',
+              content: toContentBlocks(
+                `Automatic retrieval context for current user query:\n${naturalRoutingPrompt}\n\n` +
+                  'Use this context directly in the answer. Prefer concise, source-aware natural language.',
+              ),
+            };
+          }
+        }
         } catch (e: any) {
           api.logger?.warn?.(
             `[cognitiverag-memory] fallback summarizer read failed ${JSON.stringify({
@@ -2659,15 +2961,17 @@ export default function register(api: any) {
         );
 
         const boundedMessages = Array.isArray(messages) ? messages.slice(-20) : [];
-        if (boundedMessages.length !== messages.length) {
-          messages = boundedMessages;
-          estimatedTokens = Math.max(
-            0,
-            messages.reduce((n: number, m: any) => n + Math.ceil(extractTextContent(m?.content).length / 4), 0) +
-              Math.ceil((systemPromptAddition ?? '').length / 4),
-          );
-          totalTokens = estimatedTokens;
+        messages = boundedMessages;
+        if (naturalRoutingMessage) {
+          messages = [...messages, naturalRoutingMessage];
         }
+        if (messages.length > 20) messages = messages.slice(-20);
+        estimatedTokens = Math.max(
+          0,
+          messages.reduce((n: number, m: any) => n + Math.ceil(extractTextContent(m?.content).length / 4), 0) +
+            Math.ceil((systemPromptAddition ?? '').length / 4),
+        );
+        totalTokens = estimatedTokens;
 
         api.logger?.info?.(
           `[cognitiverag-memory] assemble forwarded ${JSON.stringify({
