@@ -15,7 +15,8 @@
     "test:regression": "tsx test/assemble_regression.test.mjs",
     "test:memory": "tsx test/memory_path.test.mjs",
     "test:benchmark-invariants": "tsx test/memory_quality_benchmark_invariants.test.mjs",
-    "benchmark:memory-quality": "node scripts/run_memory_quality_benchmark.mjs"
+    "benchmark:memory-quality": "node scripts/run_memory_quality_benchmark.mjs",
+    "smoke:live-memory": "node scripts/run_memory_live_smoke.mjs"
   },
   "repository": {
     "type": "git",

@@ -3,13 +3,12 @@ name: Plugin CI
 on:
   push: {}
   pull_request: {}
+  schedule:
+    - cron: '30 5 * * *'
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: ['22']
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,16 +16,29 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '22'
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: |
+          mkdir -p ci_artifacts
+          npm ci --no-audit --no-fund | tee ci_artifacts/npm-ci.log
 
       - name: Run assemble tests
-        run: npm run test:assemble
+        run: npm run test:assemble | tee ci_artifacts/test-assemble.log
 
       - name: Run registration tests
-        run: npm run test:registration
+        run: npm run test:registration | tee ci_artifacts/test-registration.log
+
+      - name: Run benchmark invariants
+        run: npm run test:benchmark-invariants | tee ci_artifacts/test-benchmark-invariants.log
 
       - name: Run full test
-        run: npm test
+        run: npm test | tee ci_artifacts/test-full.log
+
+      - name: Upload CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-ci-artifacts-${{ github.run_id }}
+          path: ci_artifacts
+          if-no-files-found: warn
