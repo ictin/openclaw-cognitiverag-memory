@@ -283,6 +283,14 @@ type RecallHit = {
   spanEnd?: number;
 };
 
+type RecallIntent = 'session' | 'corpus' | 'general';
+
+type RankedRecallHit = {
+  hit: RecallHit;
+  score: number;
+  reasons: string[];
+};
+
 type SessionPart = {
   type: string;
   text: string;
@@ -464,6 +472,145 @@ function tokenizeQuery(input: string): string[] {
         .filter((part) => part.length >= 3),
     ),
   ).slice(0, 24);
+}
+
+function detectRecallIntent(query: string): RecallIntent {
+  const q = String(query ?? '').toLowerCase();
+  if (!q) return 'general';
+  const sessionSignals = [
+    'session',
+    'chat',
+    'we said',
+    'i said',
+    'earlier',
+    'previous message',
+    'in this conversation',
+  ];
+  for (const signal of sessionSignals) {
+    if (q.includes(signal)) return 'session';
+  }
+  const corpusSignals = [
+    'book',
+    'chapter',
+    'file',
+    'excerpt',
+    'quote',
+    'source',
+    'corpus',
+    'document',
+    'from ',
+  ];
+  for (const signal of corpusSignals) {
+    if (q.includes(signal)) return 'corpus';
+  }
+  return 'general';
+}
+
+function sourceBaseWeight(source: RecallHit['source'], intent: RecallIntent): number {
+  if (intent === 'session') {
+    if (source === 'lossless_session_raw') return 100;
+    if (source === 'lossless_session_compact') return 86;
+    if (source === 'backend_session_memory') return 72;
+    if (source === 'corpus_chunk') return 28;
+    if (source === 'large_file_excerpt') return 24;
+    return 16;
+  }
+  if (intent === 'corpus') {
+    if (source === 'large_file_excerpt') return 102;
+    if (source === 'corpus_chunk') return 92;
+    if (source === 'backend_session_memory') return 46;
+    if (source === 'lossless_session_raw') return 34;
+    if (source === 'lossless_session_compact') return 30;
+    return 20;
+  }
+  if (source === 'large_file_excerpt') return 80;
+  if (source === 'corpus_chunk') return 74;
+  if (source === 'backend_session_memory') return 63;
+  if (source === 'lossless_session_raw') return 58;
+  if (source === 'lossless_session_compact') return 52;
+  return 28;
+}
+
+function rankRecallHits(query: string, hits: RecallHit[]): { ranked: RankedRecallHit[]; intent: RecallIntent } {
+  const q = String(query ?? '').trim().toLowerCase();
+  if (!q || !Array.isArray(hits) || !hits.length) return { ranked: [], intent: detectRecallIntent(query) };
+  const intent = detectRecallIntent(query);
+  const qTokens = tokenizeQuery(q);
+  const nonMirrorPresent = hits.some(
+    (hit) => hit?.source && hit.source !== 'fallback_mirror_plugin' && hit.source !== 'fallback_mirror_workspace',
+  );
+  const uniq = new Set<string>();
+  const ranked: RankedRecallHit[] = [];
+
+  for (const hit of hits) {
+    if (!hit || typeof hit !== 'object') continue;
+    const text = String(hit.text ?? '').trim();
+    if (!text) continue;
+    const dedupeKey = `${hit.source}|${hit.chunkId ?? ''}|${text.slice(0, 320)}`;
+    if (uniq.has(dedupeKey)) continue;
+    uniq.add(dedupeKey);
+
+    const hay = text.toLowerCase();
+    const reasons: string[] = [];
+    let score = sourceBaseWeight(hit.source, intent);
+    reasons.push(`source-weight:${score}`);
+
+    const exact = hay.includes(q);
+    if (exact) {
+      score += 88;
+      reasons.push('exact-query-match');
+    }
+
+    let overlap = 0;
+    for (const tok of qTokens) {
+      if (hay.includes(tok)) overlap += 1;
+    }
+    if (overlap > 0) {
+      const overlapBoost = overlap * 7;
+      score += overlapBoost;
+      reasons.push(`token-overlap:${overlap}`);
+    }
+
+    if (hit.source === 'large_file_excerpt' && Number.isFinite(hit.spanStart) && Number.isFinite(hit.spanEnd)) {
+      score += 14;
+      reasons.push('has-span-provenance');
+    } else if (hit.source === 'corpus_chunk' && hit.chunkId && hit.corpusPath) {
+      score += 10;
+      reasons.push('has-chunk-provenance');
+    } else if (
+      (hit.source === 'fallback_mirror_plugin' || hit.source === 'fallback_mirror_workspace') &&
+      nonMirrorPresent
+    ) {
+      score -= 35;
+      reasons.push('mirror-downgraded-better-sources-exist');
+    }
+
+    if (intent === 'session' && (hit.source === 'lossless_session_raw' || hit.source === 'lossless_session_compact')) {
+      score += 20;
+      reasons.push('session-intent-preference');
+    }
+    if (intent === 'corpus' && (hit.source === 'corpus_chunk' || hit.source === 'large_file_excerpt')) {
+      score += 20;
+      reasons.push('corpus-intent-preference');
+    }
+
+    ranked.push({ hit, score, reasons });
+  }
+
+  ranked.sort((a, b) => b.score - a.score || String(a.hit.source).localeCompare(String(b.hit.source)) || String(a.hit.text).localeCompare(String(b.hit.text)));
+  return { ranked, intent };
+}
+
+function queryMatchesText(queryLower: string, textLower: string, qTokens: string[]): boolean {
+  if (!queryLower || !textLower) return false;
+  if (textLower.includes(queryLower)) return true;
+  if (!qTokens.length) return false;
+  let overlap = 0;
+  for (const tok of qTokens) {
+    if (textLower.includes(tok)) overlap += 1;
+  }
+  const minOverlap = qTokens.length >= 4 ? 2 : 1;
+  return overlap >= minOverlap;
 }
 
 function buildCorpusChunks(text: string): Array<{ startOffset: number; endOffset: number; text: string }> {
@@ -1337,12 +1484,13 @@ export default function register(api: any) {
   ): Promise<RecallHit[]> => {
     const q = String(query ?? '').trim().toLowerCase();
     if (!sessionId || !q) return [];
+    const qTokens = tokenizeQuery(q);
     const rawEntries = await readRawEntries(sessionId);
     const hits: RecallHit[] = [];
     for (const entry of rawEntries) {
       const text = String(entry?.text ?? '').trim();
       if (!text) continue;
-      if (!text.toLowerCase().includes(q)) continue;
+      if (!queryMatchesText(q, text.toLowerCase(), qTokens)) continue;
       hits.push({
         source: 'lossless_session_raw',
         sessionId,
@@ -1354,7 +1502,7 @@ export default function register(api: any) {
     const compact = (await readCompactStore(sessionId)) ?? (await rebuildCompaction(sessionId));
     for (const item of compact.items) {
       const text = `${item.summary}\n${item.sample.join('\n')}`;
-      if (!text.toLowerCase().includes(q)) continue;
+      if (!queryMatchesText(q, text.toLowerCase(), qTokens)) continue;
       hits.push({
         source: 'lossless_session_compact',
         sessionId,
@@ -1369,6 +1517,7 @@ export default function register(api: any) {
   const collectBackendRecallHits = async (sessionId: string, query: string): Promise<RecallHit[]> => {
     const trimmedQuery = String(query ?? '').trim().toLowerCase();
     if (!sessionId || !trimmedQuery) return [];
+    const qTokens = tokenizeQuery(trimmedQuery);
     try {
       const assembled = await postJson(
         '/session_assemble_context',
@@ -1396,7 +1545,7 @@ export default function register(api: any) {
       const hits: RecallHit[] = [];
       for (const candidate of candidates) {
         const normalized = candidate.toLowerCase();
-        if (!normalized.includes(trimmedQuery)) continue;
+        if (!queryMatchesText(trimmedQuery, normalized, qTokens)) continue;
         if (seen.has(candidate)) continue;
         seen.add(candidate);
         hits.push({ source: 'backend_session_memory', text: candidate });
@@ -1842,10 +1991,15 @@ export default function register(api: any) {
       const largeFileHits = await collectLargeFileRecallHits(query, 8);
       const corpusHits = await collectCorpusRecallHits(query, 8);
       const mirrorHits = await collectMirrorRecallHits(query);
-      const combined = [...backendHits, ...localHits, ...largeFileHits, ...corpusHits, ...mirrorHits].slice(0, 8);
+      const combinedRaw = [...backendHits, ...localHits, ...largeFileHits, ...corpusHits, ...mirrorHits];
+      const { ranked, intent } = rankRecallHits(query, combinedRaw);
+      const combined = ranked.slice(0, 8);
+      const winner = combined[0] ?? null;
+      const fallbackSourceSet = Array.from(new Set(combined.slice(1).map((row) => row.hit.source)));
       const lines = [
         'CognitiveRAG Recall',
         `- query: ${query}`,
+        `- ranking intent: ${intent}`,
         `- all sessions: ${allSessions ? 'yes' : 'no'}`,
         `- sessionKey: ${sessionKey || 'unknown'}`,
         `- sessionId: ${sessionId || 'unknown'}`,
@@ -1856,11 +2010,23 @@ export default function register(api: any) {
         `- corpus hits: ${corpusHits.length}`,
         `- fallback mirror hits: ${mirrorHits.length}`,
       ];
+      if (winner) {
+        lines.push(`- winning source: ${winner.hit.source}`);
+        lines.push(`- winning reason: ${winner.reasons.join(', ')}`);
+        lines.push(`- fallback sources: ${fallbackSourceSet.length ? fallbackSourceSet.join(', ') : 'none'}`);
+        lines.push(
+          `- winning provenance: ${winner.hit.corpusPath ?? winner.hit.sessionId ?? winner.hit.chunkId ?? 'text-only'}`,
+        );
+      } else {
+        lines.push('- winning source: none');
+      }
       if (!combined.length) {
         lines.push('- hits: none');
       } else {
         lines.push('- hits:');
-        for (const hit of combined) lines.push(`  - [${hit.source}] ${hit.text}`);
+        for (const row of combined) {
+          lines.push(`  - [${row.hit.source}] score=${row.score} ${row.hit.text}`);
+        }
       }
       return { text: lines.join('\n') };
     },
