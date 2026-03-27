@@ -31,13 +31,17 @@ assert.strictEqual(regs.routes.filter(r => r === '/cognitiverag-memory/status').
 assert.strictEqual(regs.routes.filter(r => r === '/cognitiverag-memory/health').length, 1, 'exactly one health route');
 assert.ok(regs.commands.includes('crag_status'), 'crag_status present');
 assert.ok(regs.commands.includes('crag_recall'), 'crag_recall present');
+assert.ok(regs.commands.includes('crag_session_search'), 'crag_session_search present');
+assert.ok(regs.commands.includes('crag_session_describe'), 'crag_session_describe present');
+assert.ok(regs.commands.includes('crag_session_expand'), 'crag_session_expand present');
+assert.ok(regs.commands.includes('crag_session_quote'), 'crag_session_quote present');
+assert.ok(regs.commands.includes('crag_session_export'), 'crag_session_export present');
 assert.ok(regs.commands.includes('crag_corpus_ingest'), 'crag_corpus_ingest present');
 assert.ok(regs.commands.includes('crag_corpus_search'), 'crag_corpus_search present');
 assert.ok(regs.commands.includes('crag_corpus_describe'), 'crag_corpus_describe present');
 assert.ok(regs.commands.includes('crag_large_describe'), 'crag_large_describe present');
 assert.ok(regs.commands.includes('crag_large_search'), 'crag_large_search present');
 assert.ok(regs.commands.includes('crag_large_excerpt'), 'crag_large_excerpt present');
-assert.ok(regs.commands.includes('crag_session_quote'), 'crag_session_quote present');
 assert.ok(regs.commands.includes('crag_explain_memory'), 'crag_explain_memory present');
 assert.ok(!regs.commands.includes('crag-status'), 'crag-status absent');
 // Ensure the fake session/transcript methods were never called
