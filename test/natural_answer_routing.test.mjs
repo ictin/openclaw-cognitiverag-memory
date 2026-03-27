@@ -107,6 +107,8 @@ assert.match(memoryPrompt, /Natural answer routing intent:\s*memory_summary/i, '
 assert.match(memoryPrompt, /Answer contract: provide a layered summary/i, 'memory summary contract should be present');
 assert.match(memoryPrompt, /Do not dump raw token lists/i, 'memory summary should avoid raw token spam');
 assert.match(memoryPrompt, /Hard format rule: use exactly 4 sections/i, 'memory summary should enforce layered sections');
+assert.match(memoryPrompt, /Deterministic answer draft/i, 'memory summary should include deterministic draft');
+assert.match(memoryPrompt, /Profile\/Preferences:/i, 'deterministic memory draft should include layered sections');
 
 const corpusAnswer = await engine.assemble({
   sessionId,
@@ -119,6 +121,8 @@ assert.match(corpusPrompt, /Natural answer routing intent:\s*corpus/i, 'corpus i
 assert.match(corpusPrompt, /Auto corpus evidence:/i, 'corpus evidence section should be present');
 assert.match(corpusPrompt, /YouTube Secrets by Nick Walsh/i, 'corpus routing should include corpus evidence');
 assert.match(corpusPrompt, /Top corpus evidence to use now:/i, 'corpus routing should expose top evidence');
+assert.match(corpusPrompt, /Deterministic answer draft/i, 'corpus routing should include deterministic draft');
+assert.match(corpusPrompt, /Retrieved corpus evidence:/i, 'corpus deterministic draft should include evidence block');
 
 const wrappedCorpusAnswer = await engine.assemble({
   sessionId,

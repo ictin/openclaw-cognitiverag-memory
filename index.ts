@@ -285,6 +285,11 @@ type RecallHit = {
 
 type RecallIntent = 'session' | 'corpus' | 'general';
 type NaturalAnswerIntent = 'memory_summary' | 'architecture' | 'corpus' | 'chat_recall' | 'none';
+type NaturalAnswerDraft = {
+  intent: NaturalAnswerIntent;
+  text: string;
+  sourceBasis: string[];
+};
 
 type RankedRecallHit = {
   hit: RecallHit;
@@ -1941,6 +1946,136 @@ export default function register(api: any) {
     return prompt.length > 2600 ? `${prompt.slice(0, 2599)}…` : prompt;
   };
 
+  const buildNaturalAnswerDraft = async (sessionId: string, userQuery: string): Promise<NaturalAnswerDraft | null> => {
+    const intent = detectNaturalAnswerIntent(userQuery);
+    if (intent === 'none') return null;
+    const query = normalizeNaturalUserQuery(userQuery);
+
+    const short = (input: string, max = 1700) => {
+      const text = String(input ?? '').replace(/\s+\n/g, '\n').trim();
+      if (text.length <= max) return text;
+      return `${text.slice(0, max - 1)}…`;
+    };
+
+    if (intent === 'memory_summary') {
+      const mirrorBullets = Array.from(
+        new Set([...(await collectMemoryBullets(memoryFile)), ...(await collectMemoryBullets(workspaceMemoryFile))]),
+      );
+      const nonToken = mirrorBullets.filter((line) => !looksLikeOpaqueToken(line));
+      const tokenCount = Math.max(0, mirrorBullets.length - nonToken.length);
+      const rawEntries = await readRawEntries(sessionId);
+      const recentSession = rawEntries
+        .map((entry) => buildSnippet(entry.text, 170))
+        .filter((line) => line && !looksLikeOpaqueToken(line) && !line.toLowerCase().includes('sender (untrusted metadata)'))
+        .slice(-4);
+      const profile = nonToken
+        .filter((line) => /(prefer|preference|like|goal|focus|workflow|project|stack|automation|schedule)/i.test(line))
+        .slice(0, 3);
+      const durable = nonToken.filter((line) => !profile.includes(line)).slice(0, 4);
+      const corpusStore = await readCorpusStore();
+      const largeStore = await readLargeFileStore();
+      const titles = Array.from(
+        new Set(
+          [...corpusStore.docs.map((d) => d.title), ...largeStore.docs.map((d) => d.title)]
+            .map((t) => String(t ?? '').trim())
+            .filter(Boolean),
+        ),
+      ).slice(0, 4);
+      const text = [
+        'Profile/Preferences:',
+        ...(profile.length ? profile.map((line) => `- ${buildSnippet(line, 180)}`) : ['- No strong profile preferences captured yet.']),
+        '',
+        'Durable Facts:',
+        ...(durable.length ? durable.map((line) => `- ${buildSnippet(line, 180)}`) : ['- Durable notes are present but mostly token-like.']),
+        ...(tokenCount > 0 ? [`- Opaque token facts available on request: ${tokenCount}`] : []),
+        '',
+        'Recent Session Context:',
+        ...(recentSession.length ? recentSession.map((line) => `- ${line}`) : ['- No rich recent session snippets available.']),
+        '',
+        'Corpus/Books:',
+        ...(titles.length ? titles.map((t) => `- ${buildSnippet(t, 140)}`) : ['- No indexed corpus/book titles found.']),
+      ].join('\n');
+      return {
+        intent,
+        text: short(text),
+        sourceBasis: [
+          'session memory (raw + compacted)',
+          'durable mirror summary (MEMORY.md)',
+          titles.length ? 'indexed corpus metadata' : 'no indexed corpus titles',
+        ],
+      };
+    }
+
+    if (intent === 'architecture') {
+      const text = [
+        '- cognitiverag-memory is active as the context engine.',
+        '- backend/session CRAG memory is the primary session context source.',
+        '- lossless session layer keeps raw + compacted local history for recall/quote.',
+        '- corpus + large-file layers provide excerpt retrieval with provenance.',
+        '- MEMORY.md is fallback mirror only (auxiliary, not the full memory system).',
+      ].join('\n');
+      return {
+        intent,
+        text,
+        sourceBasis: ['plugin runtime architecture contract'],
+      };
+    }
+
+    if (intent === 'corpus') {
+      const largeHits = await collectLargeFileRecallHits(query, 5);
+      const corpusHits = await collectCorpusRecallHits(query, 5);
+      const mirrorLinkedHits = await collectMirrorLinkedCorpusHits(query, 5);
+      const { ranked } = rankRecallHits(query, [...largeHits, ...corpusHits, ...mirrorLinkedHits]);
+      if (!ranked.length) {
+        return {
+          intent,
+          text: 'No matched corpus excerpt is currently available for this query; only metadata-level memory is visible.',
+          sourceBasis: ['corpus retrieval returned no excerpt hits'],
+        };
+      }
+      const picks = ranked.slice(0, 2);
+      const lines = ['Retrieved corpus evidence:'];
+      for (const entry of picks) {
+        const hit = entry.hit;
+        const label = hit.corpusTitle || hit.corpusPath || hit.source;
+        const prov = [hit.chunkId ?? '', Number.isFinite(hit.spanStart) ? `span ${hit.spanStart}-${hit.spanEnd}` : '']
+          .filter(Boolean)
+          .join(' | ');
+        lines.push(`- ${buildSnippet(label, 180)}${hit.corpusPath ? ` (${hit.corpusPath})` : ''}`);
+        lines.push(`  excerpt: ${buildSnippet(hit.text, 260)}`);
+        if (prov) lines.push(`  provenance: ${prov}`);
+      }
+      return {
+        intent,
+        text: short(lines.join('\n')),
+        sourceBasis: picks.map((entry) => `${entry.hit.source}${entry.hit.corpusPath ? `:${entry.hit.corpusPath}` : ''}`),
+      };
+    }
+
+    if (intent === 'chat_recall') {
+      const quote = await collectSessionQuoteHits(sessionId, query, false, 6);
+      const rawHits = quote.raw.slice(0, 2);
+      const compactHits = quote.compact.slice(0, 1);
+      const lines = ['Recovered prior chat evidence:'];
+      if (rawHits.length) {
+        rawHits.forEach((hit) => lines.push(`- raw seq ${hit.seqStart}-${hit.seqEnd}: ${buildSnippet(hit.text, 260)}`));
+      } else if (compactHits.length) {
+        compactHits.forEach((hit) =>
+          lines.push(`- compact ${hit.chunkId} seq ${hit.seqStart}-${hit.seqEnd}: ${buildSnippet(hit.text, 240)}`),
+        );
+      } else {
+        lines.push('- No high-confidence earlier chat match found.');
+      }
+      return {
+        intent,
+        text: short(lines.join('\n')),
+        sourceBasis: rawHits.length ? ['lossless_session_raw'] : compactHits.length ? ['lossless_session_compact'] : ['no-session-hit'],
+      };
+    }
+
+    return null;
+  };
+
   api.registerCommand?.({
     name: 'remember',
     description: 'Append an explicit durable memory note to the local fallback MEMORY.md.',
@@ -2855,6 +2990,7 @@ export default function register(api: any) {
         let { messages, systemPromptAddition, estimatedTokens, totalTokens } = shaped;
         let naturalRoutingMessage: any = null;
         let naturalIntent: NaturalAnswerIntent = 'none';
+        let naturalDraft: NaturalAnswerDraft | null = null;
         try {
           const compact = (await readCompactStore(sessionId)) ?? (await rebuildCompaction(sessionId));
           if (Array.isArray(compact?.items) && compact.items.length) {
@@ -2925,15 +3061,22 @@ export default function register(api: any) {
         if (latestUserQuery) {
           naturalIntent = detectNaturalAnswerIntent(latestUserQuery);
           const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
+          naturalDraft = await buildNaturalAnswerDraft(sessionId, latestUserQuery);
           if (naturalRoutingPrompt) {
+            const draftBlock = naturalDraft
+              ? `\n\nDeterministic answer draft (preserve this substance in final answer):\n${naturalDraft.text}\n\nSource basis:\n${naturalDraft.sourceBasis
+                  .map((line) => `- ${line}`)
+                  .join('\n')}`
+              : '';
             systemPromptAddition = systemPromptAddition
-              ? `${systemPromptAddition}\n\n${naturalRoutingPrompt}`
-              : naturalRoutingPrompt;
+              ? `${systemPromptAddition}\n\n${naturalRoutingPrompt}${draftBlock}`
+              : `${naturalRoutingPrompt}${draftBlock}`;
             naturalRoutingMessage = {
               role: 'system',
               content: toContentBlocks(
                 `Automatic retrieval context for current user query:\n${naturalRoutingPrompt}\n\n` +
-                  'Use this context directly in the answer. Prefer concise, source-aware natural language.',
+                  `${naturalDraft ? `Deterministic answer draft:\n${naturalDraft.text}\n\n` : ''}` +
+                  'Use this context directly in the answer. Prefer concise, source-aware natural language. Do not default to mirror token dumps when richer evidence exists.',
               ),
             };
           }
@@ -2955,6 +3098,9 @@ export default function register(api: any) {
               shapedMessagesCount: Array.isArray(messages) ? messages.length : 0,
               hasSystemPromptAddition: !!systemPromptAddition,
               systemPromptAdditionChars: (systemPromptAddition ?? '').length,
+              naturalIntent,
+              hasNaturalDraft: !!naturalDraft,
+              naturalDraftChars: (naturalDraft?.text ?? '').length,
               shapedEstimatedTokens: estimatedTokens ?? null,
               shapedTotalTokens: totalTokens ?? null,
             }),
@@ -2983,6 +3129,9 @@ export default function register(api: any) {
             messages: messages.length,
             estimatedTokens,
             totalTokens,
+            naturalIntent,
+            hasNaturalDraft: !!naturalDraft,
+            naturalDraftChars: (naturalDraft?.text ?? '').length,
           })}`,
         );
 
