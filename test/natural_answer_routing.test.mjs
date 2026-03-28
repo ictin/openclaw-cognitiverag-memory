@@ -112,6 +112,7 @@ await cmd.crag_corpus_ingest.handler({ args: [`--root ${corpusRoot} --max-files 
 const memorySummary = await engine.assemble({
   sessionId,
   sessionKey: 'agent:main:natural-routing',
+  prompt: 'What do you remember?',
   messages: [{ role: 'user', content: 'What do you remember?' }],
   tokenBudget: 4096,
 });
@@ -132,6 +133,7 @@ assert.equal((memorySummary?.messages ?? []).length, 2, 'memory summary short-ci
 const corpusAnswer = await engine.assemble({
   sessionId,
   sessionKey: 'agent:main:natural-routing',
+  prompt: 'What can you tell me about youtube secrets?',
   messages: [{ role: 'user', content: 'What can you tell me about youtube secrets?' }],
   tokenBudget: 4096,
 });
@@ -159,6 +161,7 @@ assert.equal((corpusAnswer?.messages ?? []).length, 2, 'corpus overview short-ci
 const synopsisAnswer = await engine.assemble({
   sessionId,
   sessionKey: 'agent:main:natural-routing',
+  prompt: 'What does the synopsis say?',
   messages: [{ role: 'user', content: 'What does the synopsis say?' }],
   tokenBudget: 4096,
 });
@@ -169,6 +172,7 @@ assert.match(synopsisSerialized, /youtube secrets/i, 'synopsis follow-up should 
 const wrappedCorpusAnswer = await engine.assemble({
   sessionId,
   sessionKey: 'agent:main:natural-routing',
+  prompt: 'What can you tell me about youtube secrets?',
   messages: [
     {
       role: 'user',
@@ -199,6 +203,7 @@ assert.match(JSON.stringify(wrappedCorpusAnswer?.messages ?? []), /HARD_SHORT_CI
 const chatRecall = await engine.assemble({
   sessionId,
   sessionKey: 'agent:main:natural-routing',
+  prompt: 'What did we say earlier about detailA?',
   messages: [{ role: 'user', content: 'What did we say earlier about detailA?' }],
   tokenBudget: 4096,
 });
@@ -209,20 +214,14 @@ assert.match(chatPrompt, /Auto session recall evidence:/i, 'chat recall evidence
 const architecture = await engine.assemble({
   sessionId,
   sessionKey: 'agent:main:natural-routing',
+  prompt: 'Do you use CRAG lossless memory?',
   messages: [{ role: 'user', content: 'Do you use CRAG lossless memory?' }],
   tokenBudget: 4096,
 });
 const architecturePrompt = String(architecture?.systemPromptAddition ?? '');
-assert.match(
-  architecturePrompt,
-  /Natural answer routing intent:\s*architecture/i,
-  'lossless-memory phrasing should route to architecture intent',
-);
-assert.match(
-  architecturePrompt,
-  /backend\/session CRAG memory.*primary/i,
-  'architecture answer should keep CRAG/session layers primary over mirror language',
-);
+assert.equal(architecturePrompt, '', 'architecture overview should also hard short-circuit deterministic mode');
+assert.match(JSON.stringify(architecture?.messages ?? []), /HARD_SHORT_CIRCUIT_INTENT=architecture_overview/i);
+assert.match(JSON.stringify(architecture?.messages ?? []), /CRAG\/lossless memory is active/i);
 
 restoreFetch();
 console.log('natural answer routing test passed');

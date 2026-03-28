@@ -2290,7 +2290,7 @@ export default function register(api: any) {
 
   const pruneMessagesForDeterministicIntent = (messages: any[], intent: NaturalAnswerIntent): any[] => {
     if (!Array.isArray(messages) || !messages.length) return [];
-    if (intent !== 'memory_summary' && intent !== 'corpus') return messages;
+    if (intent !== 'memory_summary' && intent !== 'corpus' && intent !== 'architecture') return messages;
     const out: any[] = [];
     for (const msg of messages) {
       const role = String(msg?.role ?? '').toLowerCase();
@@ -2308,6 +2308,13 @@ export default function register(api: any) {
       ) {
         continue;
       }
+      if (
+        intent === 'architecture' &&
+        (/I (?:only )?use the workspace memory system/i.test(text) ||
+          /there is no cognitiverag plugin/i.test(text))
+      ) {
+        continue;
+      }
       out.push(msg);
     }
     return out;
@@ -2320,12 +2327,13 @@ export default function register(api: any) {
     draft: NaturalAnswerDraft | null,
   ): any[] => {
     if (!Array.isArray(messages) || !messages.length || !draft) return messages;
-    if (intent !== 'memory_summary' && intent !== 'corpus') return messages;
+    if (intent !== 'memory_summary' && intent !== 'corpus' && intent !== 'architecture') return messages;
     const out = [...messages];
     for (let i = out.length - 1; i >= 0; i -= 1) {
       const role = String(out[i]?.role ?? '').toLowerCase();
       if (role !== 'user') continue;
-      const modeLabel = intent === 'memory_summary' ? 'memory_summary' : 'corpus_overview';
+      const modeLabel =
+        intent === 'memory_summary' ? 'memory_summary' : intent === 'corpus' ? 'corpus_overview' : 'architecture_overview';
       const strictPrompt = [
         `DETERMINISTIC_RESPONSE_MODE=${modeLabel}`,
         `Original user question: ${normalizeNaturalUserQuery(query)}`,
@@ -2351,8 +2359,9 @@ export default function register(api: any) {
     query: string,
     draft: NaturalAnswerDraft,
   ): any[] => {
-    if (intent !== 'memory_summary' && intent !== 'corpus') return [];
-    const modeLabel = intent === 'memory_summary' ? 'memory_summary' : 'corpus_overview';
+    if (intent !== 'memory_summary' && intent !== 'corpus' && intent !== 'architecture') return [];
+    const modeLabel =
+      intent === 'memory_summary' ? 'memory_summary' : intent === 'corpus' ? 'corpus_overview' : 'architecture_overview';
     const sourceSummary = Array.isArray(draft.sourceBasis) && draft.sourceBasis.length
       ? draft.sourceBasis.map((line) => `- ${line}`).join('\n')
       : '- unknown';
@@ -3373,11 +3382,15 @@ export default function register(api: any) {
           const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
           naturalDraft = await buildNaturalAnswerDraft(sessionId, latestUserQuery);
           if (naturalRoutingPrompt) {
-            deterministicComposerActive = !!naturalDraft && (naturalIntent === 'memory_summary' || naturalIntent === 'corpus');
+            deterministicComposerActive =
+              !!naturalDraft &&
+              (naturalIntent === 'memory_summary' || naturalIntent === 'corpus' || naturalIntent === 'architecture');
             const hardContract = deterministicComposerActive
               ? naturalIntent === 'memory_summary'
                 ? '\n\nDeterministic final-answer contract for memory summary:\n- Output six sections exactly: Memory stack in use (primary -> supporting); About you; Recent durable facts; Current conversation context; Books/corpus I can draw from; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Keep CRAG/session/corpus layers primary and markdown mirrors explicitly secondary.'
-                : '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
+                : naturalIntent === 'corpus'
+                  ? '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
+                  : '\n\nDeterministic final-answer contract for architecture/source questions:\n- Answer from layered memory truth contract directly.\n- Keep CRAG/lossless/corpus layers explicit and markdown mirrors secondary.\n- Do not emit provider-error or empty fallback text for this intent.'
               : '';
             const draftBlock = naturalDraft
               ? `\n\nDeterministic answer draft (preserve this substance in final answer):\n${naturalDraft.text}\n\nSource basis:\n${naturalDraft.sourceBasis
@@ -3427,9 +3440,12 @@ export default function register(api: any) {
         const boundedMessages = Array.isArray(messages) ? messages.slice(-20) : [];
         messages = pruneMessagesForDeterministicIntent(boundedMessages, naturalIntent);
         if (deterministicComposerActive && naturalDraft) {
+          const latestUserQueryForDeterministic =
+            normalizeNaturalUserQuery(String((params as any)?.prompt ?? '')) ||
+            latestUserQueryFromMessages(inputMessages);
           const hardShortCircuit = buildHardDeterministicMessages(
             naturalIntent,
-            latestUserQueryFromMessages(inputMessages),
+            latestUserQueryForDeterministic,
             naturalDraft,
           );
           if (hardShortCircuit.length) {
@@ -3437,7 +3453,12 @@ export default function register(api: any) {
             systemPromptAddition = undefined;
             naturalRoutingMessage = null;
           } else {
-            messages = enforceDeterministicDraftOnLastUser(messages, naturalIntent, latestUserQueryFromMessages(inputMessages), naturalDraft);
+            messages = enforceDeterministicDraftOnLastUser(
+              messages,
+              naturalIntent,
+              latestUserQueryForDeterministic,
+              naturalDraft,
+            );
           }
         }
         if (naturalRoutingMessage) {

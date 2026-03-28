@@ -20,7 +20,9 @@ const checks = [
   },
   {
     name: 'mode marker can be read from user or adjacent previous message',
-    ok: text.includes('let modeMatch = userText.match(/HARD_SHORT_CIRCUIT_INTENT') && text.includes('if (!modeMatch?.[1] && userIdx > 0)')
+    ok:
+      text.includes('let modeMatch = userText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview|architecture_overview)/i)') &&
+      text.includes('if (!modeMatch?.[1] && userIdx > 0)')
   },
   {
     name: 'short-circuit only applies when source question matches active prompt',
@@ -28,6 +30,17 @@ const checks = [
       text.includes('modeMatch[1].toLowerCase() === "memory_summary" && typeof expectedPrompt === "string" && expectedPrompt.trim()') &&
       text.includes('!expected.includes(sourceQuestion)') &&
       text.includes('!sourceQuestion.includes(expected)')
+  },
+  {
+    name: 'runtime accepts architecture_overview deterministic mode',
+    ok: text.includes('architecture_overview')
+  },
+  {
+    name: 'runtime applies deterministic short-circuit for architecture_overview mode',
+    ok:
+      text.includes('deterministicShortCircuit.mode === "memory_summary"') &&
+      text.includes('deterministicShortCircuit.mode === "corpus_overview"') &&
+      text.includes('deterministicShortCircuit.mode === "architecture_overview"')
   },
   {
     name: 'runtime calls short-circuit resolver with effective prompt',

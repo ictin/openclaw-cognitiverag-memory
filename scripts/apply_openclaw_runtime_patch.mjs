@@ -33,10 +33,10 @@ const expected = `function resolveDeterministicShortCircuitFromMessages(messages
 \tif (!finalMatch?.[1]) return null;
 \tconst finalAnswer = String(finalMatch[1]).trim();
 \tif (!finalAnswer) return null;
-\tlet modeMatch = userText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) || userText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
+\tlet modeMatch = userText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview|architecture_overview)/i) || userText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview|architecture_overview)/i);
 \tif (!modeMatch?.[1] && userIdx > 0) {
 \t\tconst prevText = contentToText(messages[userIdx - 1]?.content);
-\t\tif (prevText) modeMatch = prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) || prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
+\t\tif (prevText) modeMatch = prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview|architecture_overview)/i) || prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview|architecture_overview)/i);
 \t}
 \tif (!modeMatch?.[1]) return null;
 \tif (modeMatch[1].toLowerCase() === "memory_summary" && typeof expectedPrompt === "string" && expectedPrompt.trim()) {
@@ -61,6 +61,10 @@ if (match[0] === expected && source.includes('resolveDeterministicShortCircuitFr
 
 let updated = source.replace(fnRegex, expected);
 updated = updated.replace('resolveDeterministicShortCircuitFromMessages(activeSession.messages)', 'resolveDeterministicShortCircuitFromMessages(activeSession.messages, effectivePrompt)');
+updated = updated.replace(
+  '(deterministicShortCircuit.mode === "memory_summary" || deterministicShortCircuit.mode === "corpus_overview")',
+  '(deterministicShortCircuit.mode === "memory_summary" || deterministicShortCircuit.mode === "corpus_overview" || deterministicShortCircuit.mode === "architecture_overview")',
+);
 
 if (updated === source) {
   console.error('[runtime-patch] no changes applied; runtime build drift detected');

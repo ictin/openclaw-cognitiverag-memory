@@ -1,2 +1,2 @@
-2e172093a77fd30303a48313e38e3bbe2ac3ab1b86652d33a8ed4ca0097c8458  runtime_patches/openclaw/runtime-shortcircuit-intent-bridge.patch
-3d09dd8d73006f81eb9d5885c8ecd0ca2d7296ab1f3129b0fd4979f71ea1849f  /home/ictin_claw/.npm-global/lib/node_modules/openclaw/dist/pi-embedded-CbCYZxIb.js
+f9743e2b353bef571c2eb8ab29ecb4b5e6aa661ef4de8d8cb7e2c93a03231dd8  runtime_patches/openclaw/runtime-shortcircuit-intent-bridge.patch
+9db8dde66bc5dba0fc0fe727281304980ef2bb7891c350fc09a831b3e79cc9ca  /home/ictin_claw/.npm-global/lib/node_modules/openclaw/dist/pi-embedded-CbCYZxIb.js

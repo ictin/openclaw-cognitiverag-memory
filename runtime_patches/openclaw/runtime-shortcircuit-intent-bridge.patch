@@ -35,10 +35,10 @@
 +	if (!finalMatch?.[1]) return null;
 +	const finalAnswer = String(finalMatch[1]).trim();
 +	if (!finalAnswer) return null;
-+	let modeMatch = userText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) || userText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
++	let modeMatch = userText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview|architecture_overview)/i) || userText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview|architecture_overview)/i);
 +	if (!modeMatch?.[1] && userIdx > 0) {
 +		const prevText = contentToText(messages[userIdx - 1]?.content);
-+		if (prevText) modeMatch = prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) || prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
++		if (prevText) modeMatch = prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview|architecture_overview)/i) || prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview|architecture_overview)/i);
 +	}
 +	if (!modeMatch?.[1]) return null;
 +	if (modeMatch[1].toLowerCase() === "memory_summary" && typeof expectedPrompt === "string" && expectedPrompt.trim()) {
@@ -62,6 +62,6 @@
  					if (pruneProcessedHistoryImages(activeSession.messages)) activeSession.agent.replaceMessages(activeSession.messages);
 -					const deterministicShortCircuit = resolveDeterministicShortCircuitFromMessages(activeSession.messages);
 +					const deterministicShortCircuit = resolveDeterministicShortCircuitFromMessages(activeSession.messages, effectivePrompt);
- 					if (deterministicShortCircuit && (deterministicShortCircuit.mode === "memory_summary" || deterministicShortCircuit.mode === "corpus_overview")) {
++					if (deterministicShortCircuit && (deterministicShortCircuit.mode === "memory_summary" || deterministicShortCircuit.mode === "corpus_overview" || deterministicShortCircuit.mode === "architecture_overview")) {
  						const deterministicAssistant = buildAssistantMessageWithZeroUsage({
  							model: params.model,

@@ -14,12 +14,12 @@ assert.ok(existsSync(verifyScriptPath), 'runtime patch verify script should exis
 const patchText = readFileSync(patchPath, 'utf8');
 assert.match(
   patchText,
-  /DETERMINISTIC_RESPONSE_MODE=\(memory_summary\|corpus_overview\)/,
+  /DETERMINISTIC_RESPONSE_MODE=\(memory_summary\|corpus_overview\|architecture_overview\)/,
   'runtime patch should include deterministic response mode support',
 );
 assert.match(
   patchText,
-  /let modeMatch = userText\.match\(\/HARD_SHORT_CIRCUIT_INTENT=\(memory_summary\|corpus_overview\)\/i\) \|\| userText\.match\(\/DETERMINISTIC_RESPONSE_MODE=\(memory_summary\|corpus_overview\)\/i\);/,
+  /let modeMatch = userText\.match\(\/HARD_SHORT_CIRCUIT_INTENT=\(memory_summary\|corpus_overview\|architecture_overview\)\/i\) \|\| userText\.match\(\/DETERMINISTIC_RESPONSE_MODE=\(memory_summary\|corpus_overview\|architecture_overview\)\/i\);/,
   'runtime patch should read mode markers from deterministic user payload first',
 );
 assert.match(
@@ -76,14 +76,14 @@ function resolveDeterministicShortCircuitFromMessages(messages, expectedPrompt) 
   const finalAnswer = String(finalMatch[1]).trim();
   if (!finalAnswer) return null;
   let modeMatch =
-    userText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) ||
-    userText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
+    userText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview|architecture_overview)/i) ||
+    userText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview|architecture_overview)/i);
   if (!modeMatch?.[1] && userIdx > 0) {
     const prevText = contentToText(messages[userIdx - 1]?.content);
     if (prevText) {
       modeMatch =
-        prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) ||
-        prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
+        prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview|architecture_overview)/i) ||
+        prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview|architecture_overview)/i);
     }
   }
   if (!modeMatch?.[1]) return null;
@@ -111,6 +111,13 @@ function resolveDeterministicShortCircuitFromMessages(messages, expectedPrompt) 
     { role: 'user', content: 'Original user question: What can you tell me about youtube secrets?\nDETERMINISTIC_RESPONSE_MODE=corpus_overview\nBEGIN_FINAL_ANSWER\nCorpus-based answer\nEND_FINAL_ANSWER' },
   ], 'What can you tell me about youtube secrets?');
   assert.deepEqual(out, { mode: 'corpus_overview', finalAnswer: 'Corpus-based answer' });
+}
+
+{
+  const out = resolveDeterministicShortCircuitFromMessages([
+    { role: 'user', content: 'Original user question: Do you use CRAG lossless memory?\nDETERMINISTIC_RESPONSE_MODE=architecture_overview\nBEGIN_FINAL_ANSWER\nYes. Layered architecture answer.\nEND_FINAL_ANSWER' },
+  ], 'Do you use CRAG lossless memory?');
+  assert.deepEqual(out, { mode: 'architecture_overview', finalAnswer: 'Yes. Layered architecture answer.' });
 }
 
 {
