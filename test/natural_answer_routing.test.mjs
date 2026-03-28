@@ -103,22 +103,18 @@ const memorySummary = await engine.assemble({
   tokenBudget: 4096,
 });
 const memoryPrompt = String(memorySummary?.systemPromptAddition ?? '');
-assert.match(memoryPrompt, /Natural answer routing intent:\s*memory_summary/i, 'memory summary intent should auto-route');
-assert.match(memoryPrompt, /Answer contract: provide a layered summary/i, 'memory summary contract should be present');
-assert.match(memoryPrompt, /Do not dump raw token lists/i, 'memory summary should avoid raw token spam');
-assert.match(memoryPrompt, /Hard format rule: use exactly 4 sections/i, 'memory summary should enforce layered sections');
-assert.match(memoryPrompt, /Deterministic answer draft/i, 'memory summary should include deterministic draft');
-assert.match(memoryPrompt, /Profile\/Preferences:/i, 'deterministic memory draft should include layered sections');
+assert.equal(memoryPrompt, '', 'memory summary hard short-circuit should clear additive prompt text');
 assert.match(
-  memoryPrompt,
-  /Deterministic final-answer contract for memory summary/i,
-  'memory summary should include hard deterministic contract',
+  JSON.stringify(memorySummary?.messages ?? []),
+  /HARD_SHORT_CIRCUIT_INTENT=memory_summary/i,
+  'memory summary should use hard short-circuit deterministic mode',
 );
 assert.match(
   JSON.stringify(memorySummary?.messages ?? []),
-  /DETERMINISTIC_RESPONSE_MODE=memory_summary/i,
-  'memory summary should enforce deterministic final response mode in user turn',
+  /BEGIN_FINAL_ANSWER[\s\S]*Profile\/Preferences:/i,
+  'memory summary deterministic payload should include layered final answer body',
 );
+assert.equal((memorySummary?.messages ?? []).length, 2, 'memory summary short-circuit should forward only deterministic system+user pair');
 
 const corpusAnswer = await engine.assemble({
   sessionId,
@@ -127,22 +123,18 @@ const corpusAnswer = await engine.assemble({
   tokenBudget: 4096,
 });
 const corpusPrompt = String(corpusAnswer?.systemPromptAddition ?? '');
-assert.match(corpusPrompt, /Natural answer routing intent:\s*corpus/i, 'corpus intent should auto-route');
-assert.match(corpusPrompt, /Auto corpus evidence:/i, 'corpus evidence section should be present');
-assert.match(corpusPrompt, /YouTube Secrets by Nick Walsh/i, 'corpus routing should include corpus evidence');
-assert.match(corpusPrompt, /Top corpus evidence to use now:/i, 'corpus routing should expose top evidence');
-assert.match(corpusPrompt, /Deterministic answer draft/i, 'corpus routing should include deterministic draft');
-assert.match(corpusPrompt, /Retrieved corpus evidence:/i, 'corpus deterministic draft should include evidence block');
+assert.equal(corpusPrompt, '', 'corpus hard short-circuit should clear additive prompt text');
 assert.match(
-  corpusPrompt,
-  /Deterministic final-answer contract for corpus overview/i,
-  'corpus routing should include hard deterministic contract',
+  JSON.stringify(corpusAnswer?.messages ?? []),
+  /HARD_SHORT_CIRCUIT_INTENT=corpus_overview/i,
+  'corpus overview should use hard short-circuit deterministic mode',
 );
 assert.match(
   JSON.stringify(corpusAnswer?.messages ?? []),
-  /DETERMINISTIC_RESPONSE_MODE=corpus_overview/i,
-  'corpus overview should enforce deterministic final response mode in user turn',
+  /BEGIN_FINAL_ANSWER[\s\S]*Retrieved corpus evidence:/i,
+  'corpus deterministic payload should include retrieved evidence content',
 );
+assert.equal((corpusAnswer?.messages ?? []).length, 2, 'corpus overview short-circuit should forward only deterministic system+user pair');
 
 const wrappedCorpusAnswer = await engine.assemble({
   sessionId,
@@ -171,11 +163,8 @@ const wrappedCorpusAnswer = await engine.assemble({
   tokenBudget: 4096,
 });
 const wrappedCorpusPrompt = String(wrappedCorpusAnswer?.systemPromptAddition ?? '');
-assert.match(
-  wrappedCorpusPrompt,
-  /Natural answer routing intent:\s*corpus/i,
-  'wrapped metadata user prompts should still route to corpus intent',
-);
+assert.equal(wrappedCorpusPrompt, '', 'wrapped corpus prompt should also hard short-circuit');
+assert.match(JSON.stringify(wrappedCorpusAnswer?.messages ?? []), /HARD_SHORT_CIRCUIT_INTENT=corpus_overview/i);
 
 const chatRecall = await engine.assemble({
   sessionId,

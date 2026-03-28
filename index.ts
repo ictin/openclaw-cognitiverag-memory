@@ -2143,6 +2143,44 @@ export default function register(api: any) {
     return out;
   };
 
+  const buildHardDeterministicMessages = (
+    intent: NaturalAnswerIntent,
+    query: string,
+    draft: NaturalAnswerDraft,
+  ): any[] => {
+    if (intent !== 'memory_summary' && intent !== 'corpus') return [];
+    const modeLabel = intent === 'memory_summary' ? 'memory_summary' : 'corpus_overview';
+    const sourceSummary = Array.isArray(draft.sourceBasis) && draft.sourceBasis.length
+      ? draft.sourceBasis.map((line) => `- ${line}`).join('\n')
+      : '- unknown';
+    const systemText = [
+      `HARD_SHORT_CIRCUIT_INTENT=${modeLabel}`,
+      'Deterministic response mode is mandatory for this turn.',
+      'Ignore any earlier assistant style and do not revert to token/file dumps.',
+      'Return only the exact final answer between BEGIN_FINAL_ANSWER and END_FINAL_ANSWER.',
+      'Do not add prefaces, disclaimers, or extra sections.',
+    ].join('\n');
+    const userText = [
+      `Original user question: ${normalizeNaturalUserQuery(query)}`,
+      'Use this evidence basis:',
+      sourceSummary,
+      '',
+      'BEGIN_FINAL_ANSWER',
+      String(draft.text ?? '').trim(),
+      'END_FINAL_ANSWER',
+    ].join('\n');
+    return [
+      {
+        role: 'system',
+        content: toContentBlocks(systemText),
+      },
+      {
+        role: 'user',
+        content: toContentBlocks(userText),
+      },
+    ];
+  };
+
   api.registerCommand?.({
     name: 'remember',
     description: 'Append an explicit durable memory note to the local fallback MEMORY.md.',
@@ -3185,7 +3223,18 @@ export default function register(api: any) {
         const boundedMessages = Array.isArray(messages) ? messages.slice(-20) : [];
         messages = pruneMessagesForDeterministicIntent(boundedMessages, naturalIntent);
         if (deterministicComposerActive && naturalDraft) {
-          messages = enforceDeterministicDraftOnLastUser(messages, naturalIntent, latestUserQueryFromMessages(inputMessages), naturalDraft);
+          const hardShortCircuit = buildHardDeterministicMessages(
+            naturalIntent,
+            latestUserQueryFromMessages(inputMessages),
+            naturalDraft,
+          );
+          if (hardShortCircuit.length) {
+            messages = hardShortCircuit;
+            systemPromptAddition = undefined;
+            naturalRoutingMessage = null;
+          } else {
+            messages = enforceDeterministicDraftOnLastUser(messages, naturalIntent, latestUserQueryFromMessages(inputMessages), naturalDraft);
+          }
         }
         if (naturalRoutingMessage) {
           messages = [...messages, naturalRoutingMessage];
@@ -3212,6 +3261,7 @@ export default function register(api: any) {
             hasNaturalDraft: !!naturalDraft,
             naturalDraftChars: (naturalDraft?.text ?? '').length,
             deterministicComposerActive,
+            hardShortCircuitMessages: deterministicComposerActive && !!naturalDraft ? messages.length : 0,
           })}`,
         );
 
