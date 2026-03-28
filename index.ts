@@ -3120,6 +3120,7 @@ export default function register(api: any) {
           );
         }
         try {
+          const latestUserQueryFromPrompt = normalizeNaturalUserQuery(String((params as any)?.prompt ?? ''));
           const fallback = await summarizeFallback({
             pluginMemoryPath: memoryFile,
             workspaceMemoryPath: workspaceMemoryFile,
@@ -3132,7 +3133,7 @@ export default function register(api: any) {
             await writeHealthState({ fallbackMemoryMirrorActive: true });
           }
         if (fallbackSummary) {
-          const latestUserQueryForIntent = latestUserQueryFromMessages(inputMessages);
+          const latestUserQueryForIntent = latestUserQueryFromPrompt || latestUserQueryFromMessages(inputMessages);
           naturalIntent = latestUserQueryForIntent ? detectNaturalAnswerIntent(latestUserQueryForIntent) : 'none';
           let fallbackPrompt = `Fallback memory mirror (durable user-noted facts):\n${fallbackSummary}`;
           if (naturalIntent === 'corpus') {
@@ -3163,7 +3164,7 @@ export default function register(api: any) {
           ? `${systemPromptAddition}\n\n${architecturePrompt}`
           : architecturePrompt;
 
-        const latestUserQuery = latestUserQueryFromMessages(inputMessages);
+        const latestUserQuery = latestUserQueryFromPrompt || latestUserQueryFromMessages(inputMessages);
         if (latestUserQuery) {
           naturalIntent = detectNaturalAnswerIntent(latestUserQuery);
           const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);

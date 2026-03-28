@@ -1,0 +1,67 @@
+--- forensics/20260328T081216Z-runtime-integration-repro/pi-embedded-CbCYZxIb.js.before	2026-03-28 09:12:27.912357291 +0100
++++ forensics/20260328T081216Z-runtime-integration-repro/pi-embedded-CbCYZxIb.js.after	2026-03-28 09:27:49.310763427 +0100
+@@ -174634,24 +174634,40 @@
+ 	});
+ 	return { postTurnFinalizationSucceeded };
+ }
+-function resolveDeterministicShortCircuitFromMessages(messages) {
++function resolveDeterministicShortCircuitFromMessages(messages, expectedPrompt) {
+ 	if (!Array.isArray(messages) || messages.length === 0) return null;
++	let userIdx = -1;
+ 	for (let i = messages.length - 1; i >= 0; i--) {
+-		const message = messages[i];
+-		if (message?.role !== "user") continue;
+-		const text = contentToText(message?.content);
+-		if (!text) continue;
+-		const modeMatch = text.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i);
+-		const finalMatch = text.match(/BEGIN_FINAL_ANSWER\s*([\s\S]*?)\s*END_FINAL_ANSWER/i);
+-		if (!modeMatch?.[1] || !finalMatch?.[1]) continue;
+-		const mode = modeMatch[1].toLowerCase();
+-		const finalAnswer = String(finalMatch[1]).trim();
+-		if (!finalAnswer) return null;
+-		return {
+-			mode,
+-			finalAnswer
+-		};
++		if (messages[i]?.role === "user") {
++			userIdx = i;
++			break;
++		}
++	}
++	if (userIdx < 0) return null;
++	const userText = contentToText(messages[userIdx]?.content);
++	if (!userText) return null;
++	const finalMatch = userText.match(/BEGIN_FINAL_ANSWER\s*([\s\S]*?)\s*END_FINAL_ANSWER/i);
++	if (!finalMatch?.[1]) return null;
++	const finalAnswer = String(finalMatch[1]).trim();
++	if (!finalAnswer) return null;
++	let modeMatch = userText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) || userText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
++	if (!modeMatch?.[1] && userIdx > 0) {
++		const prevText = contentToText(messages[userIdx - 1]?.content);
++		if (prevText) modeMatch = prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) || prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
++	}
++	if (!modeMatch?.[1]) return null;
++	if (typeof expectedPrompt === "string" && expectedPrompt.trim()) {
++		const compact = (value) => String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
++		const expected = compact(expectedPrompt);
++		const sourceQuestionMatch = userText.match(/Original user question:\s*([^\n]+)/i);
++		const sourceQuestion = compact(sourceQuestionMatch?.[1] ?? "");
++		if (!sourceQuestion) return null;
++		if (sourceQuestion !== expected && !expected.includes(sourceQuestion) && !sourceQuestion.includes(expected)) return null;
+ 	}
++	return {
++		mode: modeMatch[1].toLowerCase(),
++		finalAnswer
++	};
+ 	return null;
+ }
+ //#endregion
+@@ -176653,7 +176669,7 @@
+ 				const transcriptLeafId = sessionManager.getLeafEntry()?.id ?? null;
+ 				try {
+ 					if (pruneProcessedHistoryImages(activeSession.messages)) activeSession.agent.replaceMessages(activeSession.messages);
+-					const deterministicShortCircuit = resolveDeterministicShortCircuitFromMessages(activeSession.messages);
++					const deterministicShortCircuit = resolveDeterministicShortCircuitFromMessages(activeSession.messages, effectivePrompt);
+ 					if (deterministicShortCircuit && (deterministicShortCircuit.mode === "memory_summary" || deterministicShortCircuit.mode === "corpus_overview")) {
+ 						const deterministicAssistant = buildAssistantMessageWithZeroUsage({
+ 							model: params.model,

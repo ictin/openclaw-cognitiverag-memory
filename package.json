@@ -9,15 +9,17 @@
     "test": "test"
   },
   "scripts": {
-    "test": "tsx test/assemble.test.mjs && tsx test/assemble_error.test.mjs && tsx test/assemble_regression.test.mjs && tsx test/memory_path.test.mjs && tsx test/lossless_session_memory.test.mjs && tsx test/long_session_exact_span.test.mjs && tsx test/crag_recall_truth.test.mjs && tsx test/corpus_ingestion_slice.test.mjs && tsx test/large_file_store.test.mjs && tsx test/hybrid_retrieval_ranking.test.mjs && tsx test/memory_quality_benchmark_invariants.test.mjs && tsx test/natural_answer_routing.test.mjs && tsx test/registration.test.mjs && tsx test/registration_strict.test.mjs && tsx test/health_handlers_readonly.test.mjs && tsx test/fallbackMemorySummarizer.test.mjs",
-    "test:assemble": "tsx test/assemble.test.mjs && tsx test/assemble_error.test.mjs && tsx test/assemble_regression.test.mjs && tsx test/memory_path.test.mjs && tsx test/lossless_session_memory.test.mjs && tsx test/long_session_exact_span.test.mjs && tsx test/crag_recall_truth.test.mjs && tsx test/corpus_ingestion_slice.test.mjs && tsx test/large_file_store.test.mjs && tsx test/hybrid_retrieval_ranking.test.mjs && tsx test/memory_quality_benchmark_invariants.test.mjs && tsx test/natural_answer_routing.test.mjs",
+    "test": "tsx test/assemble.test.mjs && tsx test/assemble_error.test.mjs && tsx test/assemble_regression.test.mjs && tsx test/memory_path.test.mjs && tsx test/lossless_session_memory.test.mjs && tsx test/long_session_exact_span.test.mjs && tsx test/crag_recall_truth.test.mjs && tsx test/corpus_ingestion_slice.test.mjs && tsx test/large_file_store.test.mjs && tsx test/hybrid_retrieval_ranking.test.mjs && tsx test/memory_quality_benchmark_invariants.test.mjs && tsx test/natural_answer_routing.test.mjs && tsx test/natural_prompt_override.test.mjs && tsx test/runtime_integration_patch.test.mjs && tsx test/registration.test.mjs && tsx test/registration_strict.test.mjs && tsx test/health_handlers_readonly.test.mjs && tsx test/fallbackMemorySummarizer.test.mjs",
+    "test:assemble": "tsx test/assemble.test.mjs && tsx test/assemble_error.test.mjs && tsx test/assemble_regression.test.mjs && tsx test/memory_path.test.mjs && tsx test/lossless_session_memory.test.mjs && tsx test/long_session_exact_span.test.mjs && tsx test/crag_recall_truth.test.mjs && tsx test/corpus_ingestion_slice.test.mjs && tsx test/large_file_store.test.mjs && tsx test/hybrid_retrieval_ranking.test.mjs && tsx test/memory_quality_benchmark_invariants.test.mjs && tsx test/natural_answer_routing.test.mjs && tsx test/natural_prompt_override.test.mjs && tsx test/runtime_integration_patch.test.mjs",
     "test:registration": "tsx test/registration.test.mjs && tsx test/registration_strict.test.mjs && tsx test/health_handlers_readonly.test.mjs",
     "test:regression": "tsx test/assemble_regression.test.mjs",
     "test:memory": "tsx test/memory_path.test.mjs",
     "test:benchmark-invariants": "tsx test/memory_quality_benchmark_invariants.test.mjs",
     "test:natural-routing": "tsx test/natural_answer_routing.test.mjs",
     "benchmark:memory-quality": "node scripts/run_memory_quality_benchmark.mjs",
-    "smoke:live-memory": "node scripts/run_memory_live_smoke.mjs"
+    "smoke:live-memory": "node scripts/run_memory_live_smoke.mjs",
+    "runtime:patch:apply": "node scripts/apply_openclaw_runtime_patch.mjs",
+    "runtime:patch:verify": "node scripts/verify_openclaw_runtime_patch.mjs"
   },
   "repository": {
     "type": "git",
