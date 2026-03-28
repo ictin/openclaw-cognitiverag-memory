@@ -25,7 +25,7 @@ const checks = [
   {
     name: 'short-circuit only applies when source question matches active prompt',
     ok:
-      text.includes('if (typeof expectedPrompt === "string" && expectedPrompt.trim())') &&
+      text.includes('modeMatch[1].toLowerCase() === "memory_summary" && typeof expectedPrompt === "string" && expectedPrompt.trim()') &&
       text.includes('!expected.includes(sourceQuestion)') &&
       text.includes('!sourceQuestion.includes(expected)')
   },

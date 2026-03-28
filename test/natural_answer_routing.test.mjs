@@ -51,6 +51,14 @@ await fs.writeFile(
     'It also highlights thumbnails, titles, and testing cadence for growth.',
   ].join('\n'),
 );
+await fs.writeFile(
+  path.join(corpusRoot, 'Robert Bly - Book Synopsis.txt'),
+  [
+    '# Robert Bly Overview',
+    'This synopsis focuses on direct response advertising ideas and copywriting themes.',
+    'It is unrelated to YouTube retention loops and thumbnail testing cadence.',
+  ].join('\n'),
+);
 
 await fs.writeFile(
   path.join(tmpDir, 'MEMORY.md'),
@@ -93,6 +101,11 @@ await engine.ingest({
   sessionKey: 'agent:main:natural-routing',
   message: { role: 'user', content: 'Please remember detailA=NL-DETAIL-A and detailB=NL-DETAIL-B' },
 });
+await engine.ingest({
+  sessionId,
+  sessionKey: 'agent:main:natural-routing',
+  message: { role: 'user', content: 'Earlier we asked about YouTube Secrets and its synopsis.' },
+});
 
 await cmd.crag_corpus_ingest.handler({ args: [`--root ${corpusRoot} --max-files 3`] });
 
@@ -111,7 +124,7 @@ assert.match(
 );
 assert.match(
   JSON.stringify(memorySummary?.messages ?? []),
-  /BEGIN_FINAL_ANSWER[\s\S]*Profile\/Preferences:/i,
+  /BEGIN_FINAL_ANSWER[\s\S]*Memory stack in use \(primary -> supporting\):/i,
   'memory summary deterministic payload should include layered final answer body',
 );
 assert.equal((memorySummary?.messages ?? []).length, 2, 'memory summary short-circuit should forward only deterministic system+user pair');
@@ -134,7 +147,24 @@ assert.match(
   /BEGIN_FINAL_ANSWER[\s\S]*Retrieved corpus evidence:/i,
   'corpus deterministic payload should include retrieved evidence content',
 );
+const corpusSerialized = JSON.stringify(corpusAnswer?.messages ?? []);
+const ytPos = corpusSerialized.toLowerCase().indexOf('youtube secrets');
+const blyPos = corpusSerialized.toLowerCase().indexOf('robert bly');
+assert.ok(ytPos >= 0, 'corpus deterministic payload should include YouTube Secrets evidence');
+if (blyPos >= 0) {
+  assert.ok(ytPos < blyPos, 'YouTube evidence should rank ahead of unrelated synopsis evidence');
+}
 assert.equal((corpusAnswer?.messages ?? []).length, 2, 'corpus overview short-circuit should forward only deterministic system+user pair');
+
+const synopsisAnswer = await engine.assemble({
+  sessionId,
+  sessionKey: 'agent:main:natural-routing',
+  messages: [{ role: 'user', content: 'What does the synopsis say?' }],
+  tokenBudget: 4096,
+});
+const synopsisSerialized = JSON.stringify(synopsisAnswer?.messages ?? []);
+assert.match(synopsisSerialized, /HARD_SHORT_CIRCUIT_INTENT=corpus_overview/i);
+assert.match(synopsisSerialized, /youtube secrets/i, 'synopsis follow-up should carry forward prior corpus topic context');
 
 const wrappedCorpusAnswer = await engine.assemble({
   sessionId,
@@ -175,6 +205,24 @@ const chatRecall = await engine.assemble({
 const chatPrompt = String(chatRecall?.systemPromptAddition ?? '');
 assert.match(chatPrompt, /Natural answer routing intent:\s*chat_recall/i, 'chat recall intent should auto-route');
 assert.match(chatPrompt, /Auto session recall evidence:/i, 'chat recall evidence section should be present');
+
+const architecture = await engine.assemble({
+  sessionId,
+  sessionKey: 'agent:main:natural-routing',
+  messages: [{ role: 'user', content: 'Do you use CRAG lossless memory?' }],
+  tokenBudget: 4096,
+});
+const architecturePrompt = String(architecture?.systemPromptAddition ?? '');
+assert.match(
+  architecturePrompt,
+  /Natural answer routing intent:\s*architecture/i,
+  'lossless-memory phrasing should route to architecture intent',
+);
+assert.match(
+  architecturePrompt,
+  /backend\/session CRAG memory.*primary/i,
+  'architecture answer should keep CRAG/session layers primary over mirror language',
+);
 
 restoreFetch();
 console.log('natural answer routing test passed');

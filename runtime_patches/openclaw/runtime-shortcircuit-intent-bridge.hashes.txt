@@ -1,3 +1,2 @@
-8daf9770f15912d023318ce4131382dfdb7d9c8f5d0c3a9f57078746318da8cb  forensics/20260328T081216Z-runtime-integration-repro/pi-embedded-CbCYZxIb.js.before
-6e2d1a211e69894489ef03de7bacf016b3e9f59986b7ebf9c6bbd2a03aefcaf7  forensics/20260328T081216Z-runtime-integration-repro/pi-embedded-CbCYZxIb.js.after
-51241d70612d233e1cb844270072b49505a9c599bff5c7a4f3e28117c6ed30ea  runtime_patches/openclaw/runtime-shortcircuit-intent-bridge.patch
+2e172093a77fd30303a48313e38e3bbe2ac3ab1b86652d33a8ed4ca0097c8458  runtime_patches/openclaw/runtime-shortcircuit-intent-bridge.patch
+3d09dd8d73006f81eb9d5885c8ecd0ca2d7296ab1f3129b0fd4979f71ea1849f  /home/ictin_claw/.npm-global/lib/node_modules/openclaw/dist/pi-embedded-CbCYZxIb.js

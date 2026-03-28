@@ -1,5 +1,5 @@
---- forensics/20260328T081216Z-runtime-integration-repro/pi-embedded-CbCYZxIb.js.before	2026-03-28 09:12:27.912357291 +0100
-+++ forensics/20260328T081216Z-runtime-integration-repro/pi-embedded-CbCYZxIb.js.after	2026-03-28 09:27:49.310763427 +0100
+--- runtime_patches/openclaw/../openclaw/../../forensics/20260328T081216Z-runtime-integration-repro/pi-embedded-CbCYZxIb.js.before	2026-03-28 09:12:27.912357291 +0100
++++ forensics/20260328T092411Z-memory-ux-mirror-fix/pi-embedded-CbCYZxIb.js.after	2026-03-28 10:29:42.404166340 +0100
 @@ -174634,24 +174634,40 @@
  	});
  	return { postTurnFinalizationSucceeded };
@@ -41,7 +41,7 @@
 +		if (prevText) modeMatch = prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) || prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
 +	}
 +	if (!modeMatch?.[1]) return null;
-+	if (typeof expectedPrompt === "string" && expectedPrompt.trim()) {
++	if (modeMatch[1].toLowerCase() === "memory_summary" && typeof expectedPrompt === "string" && expectedPrompt.trim()) {
 +		const compact = (value) => String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 +		const expected = compact(expectedPrompt);
 +		const sourceQuestionMatch = userText.match(/Original user question:\s*([^\n]+)/i);

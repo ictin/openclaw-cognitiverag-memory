@@ -34,8 +34,13 @@ assert.match(
 );
 assert.match(
   patchText,
-  /if \(typeof expectedPrompt === "string" && expectedPrompt\.trim\(\)\)/,
+  /if \(modeMatch\[1\]\.toLowerCase\(\) === "memory_summary" && typeof expectedPrompt === "string" && expectedPrompt\.trim\(\)\)/,
   'runtime patch should gate short-circuit by active prompt matching source question',
+);
+assert.match(
+  patchText,
+  /modeMatch\[1\]\.toLowerCase\(\) === "memory_summary"/,
+  'runtime patch should enforce strict prompt-match gating for memory_summary only',
 );
 
 function contentToText(content) {
@@ -82,7 +87,7 @@ function resolveDeterministicShortCircuitFromMessages(messages, expectedPrompt) 
     }
   }
   if (!modeMatch?.[1]) return null;
-  if (typeof expectedPrompt === 'string' && expectedPrompt.trim()) {
+  if (modeMatch[1].toLowerCase() === 'memory_summary' && typeof expectedPrompt === 'string' && expectedPrompt.trim()) {
     const compact = (value) => String(value ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
     const expected = compact(expectedPrompt);
     const sourceQuestionMatch = userText.match(/Original user question:\s*([^\n]+)/i);

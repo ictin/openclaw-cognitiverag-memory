@@ -39,7 +39,7 @@ const expected = `function resolveDeterministicShortCircuitFromMessages(messages
 \t\tif (prevText) modeMatch = prevText.match(/HARD_SHORT_CIRCUIT_INTENT=(memory_summary|corpus_overview)/i) || prevText.match(/DETERMINISTIC_RESPONSE_MODE=(memory_summary|corpus_overview)/i);
 \t}
 \tif (!modeMatch?.[1]) return null;
-\tif (typeof expectedPrompt === "string" && expectedPrompt.trim()) {
+\tif (modeMatch[1].toLowerCase() === "memory_summary" && typeof expectedPrompt === "string" && expectedPrompt.trim()) {
 \t\tconst compact = (value) => String(value ?? "").toLowerCase().replace(/\\s+/g, " ").trim();
 \t\tconst expected = compact(expectedPrompt);
 \t\tconst sourceQuestionMatch = userText.match(/Original user question:\\s*([^\\n]+)/i);

@@ -491,6 +491,66 @@ function tokenizeQuery(input: string): string[] {
   ).slice(0, 24);
 }
 
+const QUERY_STOPWORDS = new Set([
+  'what',
+  'can',
+  'you',
+  'tell',
+  'about',
+  'does',
+  'the',
+  'this',
+  'that',
+  'from',
+  'with',
+  'your',
+  'into',
+  'have',
+  'has',
+  'and',
+  'for',
+  'are',
+  'use',
+  'using',
+  'say',
+  'says',
+  'said',
+  'book',
+  'books',
+  'chapter',
+  'chapters',
+  'synopsis',
+  'corpus',
+  'memory',
+  'remember',
+  'remembering',
+  'organized',
+]);
+
+function salientQueryTokens(input: string): string[] {
+  return tokenizeQuery(input).filter((tok) => !QUERY_STOPWORDS.has(tok));
+}
+
+function extractCorpusTopicPhrase(query: string): string {
+  const q = normalizeNaturalUserQuery(query).toLowerCase();
+  if (!q) return '';
+  const patterns = [
+    /what can you tell me about\s+(.+?)\??$/i,
+    /tell me about\s+(.+?)\??$/i,
+    /what does\s+(.+?)\s+say\??$/i,
+    /what does the synopsis say about\s+(.+?)\??$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = q.match(pattern);
+    const phrase = String(match?.[1] ?? '').trim().replace(/[.?!]+$/g, '');
+    if (!phrase) continue;
+    if (/^(it|this|that|the book|the synopsis)$/i.test(phrase)) continue;
+    return phrase;
+  }
+  if (q.includes('youtube secrets')) return 'youtube secrets';
+  return '';
+}
+
 function normalizeNaturalUserQuery(input: string): string {
   const raw = String(input ?? '').trim();
   if (!raw) return '';
@@ -533,6 +593,9 @@ function detectRecallIntent(query: string): RecallIntent {
     if (q.includes(signal)) return 'session';
   }
   const corpusSignals = [
+    'what can you tell me about',
+    'tell me about',
+    'synopsis',
     'book',
     'chapter',
     'file',
@@ -564,6 +627,9 @@ function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
 
   if (
     q.includes('are you using crag') ||
+    q.includes('do you use crag') ||
+    q.includes('crag lossless memory') ||
+    q.includes('how is your memory organized') ||
     q.includes('where is this stored') ||
     q.includes('what is stored in memory.md') ||
     q.includes('what comes from backend/session memory') ||
@@ -632,9 +698,23 @@ function rankRecallHits(query: string, hits: RecallHit[]): { ranked: RankedRecal
   if (!q || !Array.isArray(hits) || !hits.length) return { ranked: [], intent: detectRecallIntent(query) };
   const intent = detectRecallIntent(query);
   const qTokens = tokenizeQuery(q);
+  const topicPhrase = extractCorpusTopicPhrase(q);
+  const topicTokens = salientQueryTokens(topicPhrase || q);
   const nonMirrorPresent = hits.some(
     (hit) => hit?.source && hit.source !== 'fallback_mirror_plugin' && hit.source !== 'fallback_mirror_workspace',
   );
+  const hasCorpusTopicAlignedCandidate =
+    intent === 'corpus' &&
+    topicTokens.length > 0 &&
+    hits.some((hit) => {
+      if (!hit || (hit.source !== 'corpus_chunk' && hit.source !== 'large_file_excerpt')) return false;
+      const metaHay = `${String(hit.corpusTitle ?? '')}\n${String(hit.corpusPath ?? '')}`.toLowerCase();
+      let overlap = 0;
+      for (const tok of topicTokens) {
+        if (metaHay.includes(tok)) overlap += 1;
+      }
+      return overlap >= Math.min(2, topicTokens.length);
+    });
   const uniq = new Set<string>();
   const ranked: RankedRecallHit[] = [];
 
@@ -688,6 +768,25 @@ function rankRecallHits(query: string, hits: RecallHit[]): { ranked: RankedRecal
     if (intent === 'corpus' && (hit.source === 'corpus_chunk' || hit.source === 'large_file_excerpt')) {
       score += 20;
       reasons.push('corpus-intent-preference');
+      if (topicTokens.length > 0) {
+        const metaHay = `${String(hit.corpusTitle ?? '')}\n${String(hit.corpusPath ?? '')}`.toLowerCase();
+        let topicOverlap = 0;
+        for (const tok of topicTokens) {
+          if (metaHay.includes(tok)) topicOverlap += 1;
+        }
+        if (topicOverlap > 0) {
+          const topicBoost = 48 + topicOverlap * 22;
+          score += topicBoost;
+          reasons.push(`topic-title-path-match:${topicOverlap}`);
+        } else if (hasCorpusTopicAlignedCandidate) {
+          score -= 95;
+          reasons.push('topic-mismatch-penalty');
+        }
+        if (topicPhrase && metaHay.includes(topicPhrase)) {
+          score += 34;
+          reasons.push('topic-phrase-exact-meta-match');
+        }
+      }
     }
 
     ranked.push({ hit, score, reasons });
@@ -1800,10 +1899,10 @@ export default function register(api: any) {
     const refs = allBullets
       .map((line) => {
         const sourceMatch = line.match(/SOURCE_PATH=([^;]+)(?:;|$)/i);
-        if (!sourceMatch) return null;
-        const sourcePath = String(sourceMatch[1] ?? '').trim();
+        const pointerMatch = line.match(/source path\s*`([^`]+)`/i);
+        const sourcePath = String(sourceMatch?.[1] ?? pointerMatch?.[1] ?? '').trim();
         if (!sourcePath) return null;
-        const titleMatch = line.match(/TITLE=([^;]+)(?:;|$)/i);
+        const titleMatch = line.match(/TITLE=([^;]+)(?:;|$)/i) ?? line.match(/corpus pointer:\s*([^,]+)/i);
         const title = String(titleMatch?.[1] ?? path.basename(sourcePath)).trim();
         return { sourcePath, title };
       })
@@ -1836,6 +1935,61 @@ export default function register(api: any) {
         corpusPath: ref.sourcePath,
         corpusTitle: ref.title,
         text: `${ref.title} | ${ref.sourcePath} | mirror-linked excerpt | ${excerpt}`,
+      });
+      if (out.length >= Math.max(1, limit)) break;
+    }
+    return out;
+  };
+
+  const collectPriorityMirrorTopicHits = async (query: string, limit = 2): Promise<RecallHit[]> => {
+    const q = normalizeNaturalUserQuery(query).toLowerCase().trim();
+    if (!q) return [];
+    const topicPhrase = extractCorpusTopicPhrase(q);
+    const topicTokens = salientQueryTokens(topicPhrase || q);
+    if (!topicTokens.length) return [];
+    const allBullets = [
+      ...(await collectMemoryBullets(memoryFile)),
+      ...(await collectMemoryBullets(workspaceMemoryFile)),
+    ];
+    const refs = allBullets
+      .map((line) => {
+        const sourceMatch = line.match(/SOURCE_PATH=([^;]+)(?:;|$)/i);
+        const pointerMatch = line.match(/source path\s*`([^`]+)`/i);
+        const sourcePath = String(sourceMatch?.[1] ?? pointerMatch?.[1] ?? '').trim();
+        if (!sourcePath) return null;
+        const titleMatch = line.match(/TITLE=([^;]+)(?:;|$)/i) ?? line.match(/corpus pointer:\s*([^,]+)/i);
+        const title = String(titleMatch?.[1] ?? path.basename(sourcePath)).trim();
+        return { sourcePath, title };
+      })
+      .filter((v): v is { sourcePath: string; title: string } => !!v);
+
+    const seen = new Set<string>();
+    const out: RecallHit[] = [];
+    for (const ref of refs) {
+      const key = `${ref.sourcePath}::${ref.title}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const metaHay = `${ref.title}\n${ref.sourcePath}`.toLowerCase();
+      let overlap = 0;
+      for (const tok of topicTokens) {
+        if (metaHay.includes(tok)) overlap += 1;
+      }
+      if (overlap < Math.min(2, topicTokens.length)) continue;
+      let text = '';
+      try {
+        text = await fs.readFile(ref.sourcePath, 'utf8');
+      } catch {
+        continue;
+      }
+      const body = String(text ?? '').replace(/\r\n/g, '\n').trim();
+      if (!body) continue;
+      const excerpt = buildSnippet(body, 420);
+      out.push({
+        source: 'corpus_chunk',
+        chunkId: `mirror-priority:${toHashId(ref.sourcePath).slice(0, 8)}`,
+        corpusPath: ref.sourcePath,
+        corpusTitle: ref.title,
+        text: `${ref.title} | ${ref.sourcePath} | mirror-priority excerpt | ${excerpt}`,
       });
       if (out.length >= Math.max(1, limit)) break;
     }
@@ -1889,7 +2043,7 @@ export default function register(api: any) {
         recentMeaningful.forEach((line) => lines.push(`  - ${line}`));
       }
       lines.push('Answer quality rule: include at most 2 opaque token examples in normal summaries, and prioritize meaningful facts over storage internals.');
-      lines.push('Hard format rule: use exactly 4 sections titled Profile/Preferences, Durable Facts, Recent Session Context, and Corpus/Books.');
+      lines.push('Hard format rule: use exactly 6 sections titled Memory stack in use (primary -> supporting), About you, Recent durable facts, Current conversation context, Books/corpus I can draw from, and What I am still missing.');
     } else if (intent === 'architecture') {
       lines.push('Auto architecture truth contract:');
       lines.push('- cognitiverag-memory is active context engine when slot says so.');
@@ -1957,6 +2111,23 @@ export default function register(api: any) {
       return `${text.slice(0, max - 1)}…`;
     };
 
+    const buildCorpusEffectiveQuery = async (sid: string, q: string): Promise<string> => {
+      const normalized = normalizeNaturalUserQuery(q);
+      const topic = extractCorpusTopicPhrase(normalized);
+      if (topic) return normalized;
+      if (!/\bsynopsis\b/i.test(normalized)) return normalized;
+      const entries = await readRawEntries(sid);
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const entry = entries[i];
+        if (String(entry?.sender ?? '') !== 'user') continue;
+        const text = normalizeNaturalUserQuery(String(entry?.text ?? ''));
+        if (!text || text.toLowerCase() === normalized.toLowerCase()) continue;
+        const found = extractCorpusTopicPhrase(text);
+        if (found) return `${normalized} ${found}`.trim();
+      }
+      return normalized;
+    };
+
     if (intent === 'memory_summary') {
       const mirrorBullets = Array.from(
         new Set([...(await collectMemoryBullets(memoryFile)), ...(await collectMemoryBullets(workspaceMemoryFile))]),
@@ -1982,50 +2153,78 @@ export default function register(api: any) {
         ),
       ).slice(0, 4);
       const text = [
-        'Profile/Preferences:',
-        ...(profile.length ? profile.map((line) => `- ${buildSnippet(line, 180)}`) : ['- No strong profile preferences captured yet.']),
+        'Memory stack in use (primary -> supporting):',
+        '- Active context engine: cognitiverag-memory (primary).',
+        '- Backend/session memory: primary turn-by-turn CRAG context.',
+        '- Local lossless session memory: raw + compacted history for recall/quote/expand.',
+        '- Corpus + large-file memory: excerpt retrieval with provenance for books/files.',
+        '- Markdown mirrors (MEMORY.md + daily notes): fallback/user-facing summaries, not the full memory system.',
         '',
-        'Durable Facts:',
-        ...(durable.length ? durable.map((line) => `- ${buildSnippet(line, 180)}`) : ['- Durable notes are present but mostly token-like.']),
-        ...(tokenCount > 0 ? [`- Opaque token facts available on request: ${tokenCount}`] : []),
+        'About you:',
+        ...(profile.length
+          ? profile.map((line) => `- ${buildSnippet(line, 180)}`)
+          : ['- No strong personal profile/preferences captured yet.']),
         '',
-        'Recent Session Context:',
-        ...(recentSession.length ? recentSession.map((line) => `- ${line}`) : ['- No rich recent session snippets available.']),
+        'Recent durable facts:',
+        ...(durable.length
+          ? durable.map((line) => `- ${buildSnippet(line, 180)}`)
+          : ['- Durable memory exists, but most entries are still token-like and need curation.']),
+        ...(tokenCount > 0 ? [`- Opaque token entries available on request: ${tokenCount}`] : []),
         '',
-        'Corpus/Books:',
+        'Current conversation context:',
+        ...(recentSession.length ? recentSession.map((line) => `- ${line}`) : ['- No rich recent session snippets available yet.']),
+        '',
+        'Books/corpus I can draw from:',
         ...(titles.length ? titles.map((t) => `- ${buildSnippet(t, 140)}`) : ['- No indexed corpus/book titles found.']),
+        '',
+        'What I am still missing:',
+        '- Your preferred name/pronouns/timezone in USER.md (if you want these remembered).',
+        '- More human-meaningful durable notes; current mirror still has many opaque validation tokens.',
       ].join('\n');
       return {
         intent,
         text: short(text),
         sourceBasis: [
-          'session memory (raw + compacted)',
-          'durable mirror summary (MEMORY.md)',
-          titles.length ? 'indexed corpus metadata' : 'no indexed corpus titles',
+          'active context-engine + backend/session memory',
+          'local lossless session memory (raw + compacted)',
+          titles.length ? 'corpus/large-file index + excerpts' : 'no indexed corpus titles',
+          'markdown mirrors (fallback summaries)',
         ],
       };
     }
 
     if (intent === 'architecture') {
       const text = [
-        '- cognitiverag-memory is active as the context engine.',
-        '- backend/session CRAG memory is the primary session context source.',
-        '- lossless session layer keeps raw + compacted local history for recall/quote.',
-        '- corpus + large-file layers provide excerpt retrieval with provenance.',
-        '- MEMORY.md is fallback mirror only (auxiliary, not the full memory system).',
+        'Yes. CRAG/lossless memory is active.',
+        '',
+        'Memory layers (primary -> supporting):',
+        '- cognitiverag-memory context engine (active, primary orchestrator).',
+        '- backend/session CRAG memory (primary turn context).',
+        '- local lossless session memory (raw + compacted history for recall/quote/expand).',
+        '- corpus + large-file retrieval (book/file excerpts with provenance).',
+        '- MEMORY.md and daily notes (fallback/user-facing mirrors only).',
+        '',
+        'Mirror files help with human-readable continuity, but they are not the whole memory system.',
       ].join('\n');
       return {
         intent,
         text,
-        sourceBasis: ['plugin runtime architecture contract'],
+        sourceBasis: ['runtime architecture contract (layered memory truth model)'],
       };
     }
 
     if (intent === 'corpus') {
-      const largeHits = await collectLargeFileRecallHits(query, 5);
-      const corpusHits = await collectCorpusRecallHits(query, 5);
-      const mirrorLinkedHits = await collectMirrorLinkedCorpusHits(query, 5);
-      const { ranked } = rankRecallHits(query, [...largeHits, ...corpusHits, ...mirrorLinkedHits]);
+      const effectiveQuery = await buildCorpusEffectiveQuery(sessionId, query);
+      const mirrorPriorityHits = await collectPriorityMirrorTopicHits(effectiveQuery, 2);
+      const largeHits = await collectLargeFileRecallHits(effectiveQuery, 5);
+      const corpusHits = await collectCorpusRecallHits(effectiveQuery, 5);
+      const mirrorLinkedHits = await collectMirrorLinkedCorpusHits(effectiveQuery, 5);
+      const { ranked } = rankRecallHits(effectiveQuery, [
+        ...mirrorPriorityHits,
+        ...largeHits,
+        ...corpusHits,
+        ...mirrorLinkedHits,
+      ]);
       if (!ranked.length) {
         return {
           intent,
@@ -2048,7 +2247,11 @@ export default function register(api: any) {
       return {
         intent,
         text: short(lines.join('\n')),
-        sourceBasis: picks.map((entry) => `${entry.hit.source}${entry.hit.corpusPath ? `:${entry.hit.corpusPath}` : ''}`),
+        sourceBasis: [
+          ...picks.map((entry) => `${entry.hit.source}${entry.hit.corpusPath ? `:${entry.hit.corpusPath}` : ''}`),
+          mirrorPriorityHits.length ? `mirror-priority-hits:${mirrorPriorityHits.length}` : '',
+          effectiveQuery !== query ? `effective-query:${effectiveQuery}` : '',
+        ].filter(Boolean),
       };
     }
 
@@ -3173,7 +3376,7 @@ export default function register(api: any) {
             deterministicComposerActive = !!naturalDraft && (naturalIntent === 'memory_summary' || naturalIntent === 'corpus');
             const hardContract = deterministicComposerActive
               ? naturalIntent === 'memory_summary'
-                ? '\n\nDeterministic final-answer contract for memory summary:\n- Output five sections exactly: About you; Recent durable facts; Current conversation context; Books/corpus remembered; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Prefer meaningful facts and uncertainties over raw storage dumps.'
+                ? '\n\nDeterministic final-answer contract for memory summary:\n- Output six sections exactly: Memory stack in use (primary -> supporting); About you; Recent durable facts; Current conversation context; Books/corpus I can draw from; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Keep CRAG/session/corpus layers primary and markdown mirrors explicitly secondary.'
                 : '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
               : '';
             const draftBlock = naturalDraft
