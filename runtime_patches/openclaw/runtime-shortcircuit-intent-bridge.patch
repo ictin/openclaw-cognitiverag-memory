@@ -65,3 +65,9 @@
 +					if (deterministicShortCircuit && (deterministicShortCircuit.mode === "memory_summary" || deterministicShortCircuit.mode === "corpus_overview" || deterministicShortCircuit.mode === "architecture_overview")) {
  						const deterministicAssistant = buildAssistantMessageWithZeroUsage({
  							model: params.model,
+@@ -2893,7 +2893,8 @@
+ function formatRawAssistantErrorForUi(raw) {
+ 	const trimmed = (raw ?? "").trim();
+ 	if (!trimmed) return "LLM request failed with an unknown error.";
++	if (trimmed === '{"detail":"Bad Request"}' || /"detail"\s*:\s*"Bad Request"/i.test(trimmed) || /invalid_request_body/i.test(trimmed)) return "The upstream model request failed temporarily. Please retry in a few seconds.";
+ 	const leadingStatus = extractLeadingHttpStatus(trimmed);

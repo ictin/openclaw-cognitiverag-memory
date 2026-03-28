@@ -54,7 +54,11 @@ const expected = `function resolveDeterministicShortCircuitFromMessages(messages
 \treturn null;
 }`;
 
-if (match[0] === expected && source.includes('resolveDeterministicShortCircuitFromMessages(activeSession.messages, effectivePrompt)')) {
+if (
+  match[0] === expected &&
+  source.includes('resolveDeterministicShortCircuitFromMessages(activeSession.messages, effectivePrompt)') &&
+  source.includes('trimmed === \'{"detail":"Bad Request"}\'')
+) {
   console.log('[runtime-patch] already applied');
   process.exit(0);
 }
@@ -64,6 +68,10 @@ updated = updated.replace('resolveDeterministicShortCircuitFromMessages(activeSe
 updated = updated.replace(
   '(deterministicShortCircuit.mode === "memory_summary" || deterministicShortCircuit.mode === "corpus_overview")',
   '(deterministicShortCircuit.mode === "memory_summary" || deterministicShortCircuit.mode === "corpus_overview" || deterministicShortCircuit.mode === "architecture_overview")',
+);
+updated = updated.replace(
+  'if (!trimmed) return "LLM request failed with an unknown error.";',
+  'if (!trimmed) return "LLM request failed with an unknown error.";\n\tif (trimmed === \'{\"detail\":\"Bad Request\"}\' || /\"detail\"\\s*:\\s*\"Bad Request\"/i.test(trimmed) || /invalid_request_body/i.test(trimmed)) return "The upstream model request failed temporarily. Please retry in a few seconds.";',
 );
 
 if (updated === source) {

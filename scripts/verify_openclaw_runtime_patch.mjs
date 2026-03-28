@@ -49,6 +49,13 @@ const checks = [
   {
     name: 'runtime emits deterministic short-circuit marker log',
     ok: text.includes('context engine deterministic short-circuit applied')
+  },
+  {
+    name: 'runtime rewrites raw provider bad-request payloads to graceful copy',
+    ok:
+      text.includes('trimmed === \'{"detail":"Bad Request"}\'') &&
+      text.includes('/invalid_request_body/i.test(trimmed)') &&
+      text.includes('The upstream model request failed temporarily. Please retry in a few seconds.')
   }
 ];
 

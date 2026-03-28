@@ -42,6 +42,16 @@ assert.match(
   /modeMatch\[1\]\.toLowerCase\(\) === "memory_summary"/,
   'runtime patch should enforce strict prompt-match gating for memory_summary only',
 );
+assert.match(
+  patchText,
+  /trimmed === '\{\"detail\":\"Bad Request\"\}'/,
+  'runtime patch should rewrite raw Bad Request payload to graceful copy',
+);
+assert.match(
+  patchText,
+  /invalid_request_body/i,
+  'runtime patch should also rewrite invalid_request_body payloads',
+);
 
 function contentToText(content) {
   if (typeof content === 'string') return content;
