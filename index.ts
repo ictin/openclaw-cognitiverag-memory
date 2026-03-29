@@ -12,6 +12,7 @@ import {
 import { fetchBackendAssembleContext } from './src/client/backendClient.js';
 import { buildBackendSelectorPrompt } from './src/engine/assemble.js';
 import { buildCragExplainMemoryText } from './src/commands/cragExplainMemory.js';
+import { deriveOnlineLaneStatus, deriveSourceClasses } from './src/validators/contractValidator.js';
 
 const COG_RAG_BASE = 'http://127.0.0.1:8000';
 
@@ -271,6 +272,10 @@ type HealthState = {
   rollbackReason: string | null;
   rollbackReady: boolean;
   lastRollbackAt: string | null;
+  onlineLaneStatus: 'enabled' | 'disabled' | 'unknown';
+  onlineLaneLastCheckedAt: string | null;
+  onlineLaneLastError: string | null;
+  onlineSourceClasses: string[];
 };
 
 type RecallHit = {
@@ -281,7 +286,9 @@ type RecallHit = {
     | 'lossless_session_raw'
     | 'lossless_session_compact'
     | 'corpus_chunk'
-    | 'large_file_excerpt';
+    | 'large_file_excerpt'
+    | 'web_evidence'
+    | 'web_promoted_fact';
   text: string;
   sessionId?: string;
   chunkId?: string;
@@ -875,6 +882,10 @@ const defaultHealthState = (): HealthState => ({
   rollbackReason: null,
   rollbackReady: true,
   lastRollbackAt: null,
+  onlineLaneStatus: 'unknown',
+  onlineLaneLastCheckedAt: null,
+  onlineLaneLastError: null,
+  onlineSourceClasses: [],
 });
 
 function withTimeoutSignal(timeoutMs: number) {
@@ -1098,6 +1109,45 @@ export default function register(api: any) {
     });
   };
 
+  const probeOnlineLane = async () => {
+    const now = new Date().toISOString();
+    try {
+      const webProbe = await fetchBackendAssembleContext(
+        COG_RAG_BASE,
+        {
+          sessionId: '__crag_online_probe__',
+          freshTailCount: 0,
+          budget: 512,
+          query: 'latest update verify source',
+          intentFamily: 'investigative',
+        },
+        1500,
+      );
+      const onlineLaneStatus = deriveOnlineLaneStatus(webProbe.explanation);
+      const sourceClasses = deriveSourceClasses(webProbe.explanation);
+      await writeHealthState({
+        onlineLaneStatus,
+        onlineLaneLastCheckedAt: now,
+        onlineLaneLastError: webProbe.explanation.ok ? null : webProbe.explanation.error,
+        onlineSourceClasses: sourceClasses,
+      });
+      return {
+        onlineLaneStatus,
+        sourceClasses,
+      };
+    } catch (e: any) {
+      await writeHealthState({
+        onlineLaneStatus: 'unknown',
+        onlineLaneLastCheckedAt: now,
+        onlineLaneLastError: String(e?.message ?? e),
+      });
+      return {
+        onlineLaneStatus: 'unknown' as const,
+        sourceClasses: [] as string[],
+      };
+    }
+  };
+
   const probeBackend = async () => {
     try {
       const probe = await postJson(
@@ -1111,6 +1161,7 @@ export default function register(api: any) {
       );
       if (probe.status >= 200 && probe.status < 300) {
         const state = await markSuccess();
+        await probeOnlineLane();
         return { ok: true, state, backendReachable: true, mode: 'healthy' as const };
       }
       const state = await markFail(`probe_status_${probe.status}`);
@@ -3075,6 +3126,7 @@ export default function register(api: any) {
           slot,
           fallbackMirrorActive: !!current?.fallbackMemoryMirrorActive,
           explanation: backendProbe.explanation as any,
+          onlineLaneStatus: current?.onlineLaneStatus ?? 'unknown',
         }),
       };
     },
@@ -3092,9 +3144,8 @@ export default function register(api: any) {
     requireAuth: true,
     handler: async () => {
       // Read-only status: do not create any session/transcript or call any agent CLI.
-      const prior = await readHealthState();
-      const probe = await probeBackend();
-      const current = probe?.state ?? prior;
+      await probeBackend();
+      const current = await readHealthState();
       const slot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
       const lines = [
         'CognitiveRAG Status',
@@ -3110,6 +3161,10 @@ export default function register(api: any) {
         `- rollback reason: ${current?.rollbackReason ?? 'none'}`,
         `- rollback ready: ${current?.rollbackReady ? 'yes' : 'no'}`,
         `- last rollback: ${current?.lastRollbackAt ?? 'never'}`,
+        `- online lane status: ${current?.onlineLaneStatus ?? 'unknown'}`,
+        `- online source classes: ${Array.isArray(current?.onlineSourceClasses) && current.onlineSourceClasses.length ? current.onlineSourceClasses.join(', ') : 'none'}`,
+        `- online lane last checked: ${current?.onlineLaneLastCheckedAt ?? 'never'}`,
+        `- online lane last error: ${current?.onlineLaneLastError ?? 'none'}`,
         `- fallback memory mirror active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
       ];
       return { text: lines.join('\n') };
@@ -3535,9 +3590,8 @@ export default function register(api: any) {
   }));
 
   const buildHealthPayload = async () => {
-    const prior = await readHealthState();
-    const probe = await probeBackend();
-    const current = probe?.state ?? prior;
+    await probeBackend();
+    const current = await readHealthState();
     return {
       pluginLoaded: true,
       contextEngineSlot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
@@ -3548,6 +3602,10 @@ export default function register(api: any) {
       lastError: current?.lastError ?? null,
       consecutiveFailures: Number(current?.consecutiveFailures ?? 0),
       fallbackMemoryMirrorActive: !!current?.fallbackMemoryMirrorActive,
+      onlineLaneStatus: current?.onlineLaneStatus ?? 'unknown',
+      onlineSourceClasses: Array.isArray(current?.onlineSourceClasses) ? current.onlineSourceClasses : [],
+      onlineLaneLastCheckedAt: current?.onlineLaneLastCheckedAt ?? null,
+      onlineLaneLastError: current?.onlineLaneLastError ?? null,
       rollbackRecommended: !!current?.rollbackRecommended,
       rollbackReason: current?.rollbackReason ?? null,
       rollbackReady: !!current?.rollbackReady,
@@ -3576,6 +3634,10 @@ export default function register(api: any) {
           lastError: String(e?.message ?? e),
           consecutiveFailures: 0,
           fallbackMemoryMirrorActive: false,
+          onlineLaneStatus: 'unknown',
+          onlineSourceClasses: [],
+          onlineLaneLastCheckedAt: null,
+          onlineLaneLastError: String(e?.message ?? e),
           rollbackRecommended: false,
           rollbackReason: String(e?.message ?? e),
           rollbackReady: true,

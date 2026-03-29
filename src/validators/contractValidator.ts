@@ -30,6 +30,8 @@ export type ContractValidation =
   | { ok: true; value: SelectionExplanation }
   | { ok: false; error: string };
 
+export type SourceClass = 'corpus' | 'large-file' | 'web evidence' | 'web promoted';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -91,3 +93,66 @@ export function validateSelectionExplanation(input: unknown): ContractValidation
   return { ok: true, value };
 }
 
+function normalizeMemoryType(value: unknown): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .trim();
+}
+
+function normalizeLane(value: unknown): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .trim();
+}
+
+export function deriveSourceClasses(explanation: ContractValidation): SourceClass[] {
+  if (!explanation.ok) return [];
+  const classes = new Set<SourceClass>();
+
+  const addFrom = (memoryTypeRaw: unknown, laneRaw: unknown) => {
+    const memoryType = normalizeMemoryType(memoryTypeRaw);
+    const lane = normalizeLane(laneRaw);
+
+    if (
+      memoryType === 'web_evidence' ||
+      memoryType === 'web_evidence_raw' ||
+      memoryType.includes('web_evidence') ||
+      lane === 'web'
+    ) {
+      classes.add('web evidence');
+    }
+    if (
+      memoryType === 'web_promoted_fact' ||
+      memoryType === 'web_promoted' ||
+      memoryType.includes('web_promoted')
+    ) {
+      classes.add('web promoted');
+    }
+    if (memoryType === 'corpus_chunk' || memoryType.includes('corpus') || lane === 'corpus') {
+      classes.add('corpus');
+    }
+    if (memoryType === 'large_file_excerpt' || memoryType.includes('large_file') || lane === 'large_file') {
+      classes.add('large-file');
+    }
+  };
+
+  for (const block of explanation.value.selected_blocks) {
+    addFrom(block?.memory_type, block?.lane);
+  }
+  for (const [lane] of Object.entries(explanation.value.lane_totals || {})) {
+    addFrom('', lane);
+  }
+
+  const ordered: SourceClass[] = ['corpus', 'large-file', 'web evidence', 'web promoted'];
+  return ordered.filter((label) => classes.has(label));
+}
+
+export type OnlineLaneStatus = 'enabled' | 'disabled' | 'unknown';
+
+export function deriveOnlineLaneStatus(explanation: ContractValidation): OnlineLaneStatus {
+  if (!explanation.ok) return 'unknown';
+  const classes = deriveSourceClasses(explanation);
+  return classes.some((entry) => entry === 'web evidence' || entry === 'web promoted') ? 'enabled' : 'disabled';
+}
