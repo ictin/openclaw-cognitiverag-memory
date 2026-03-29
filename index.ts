@@ -4,6 +4,14 @@ import path from 'node:path';
 import fsSync from 'node:fs';
 import { createHash } from 'node:crypto';
 import { summarizeFallback } from './lib/fallbackMemorySummarizer.js';
+import {
+  detectNaturalAnswerIntent as detectNaturalIntentBridge,
+  toBackendIntentFamily,
+  type NaturalAnswerIntent as BridgeNaturalAnswerIntent,
+} from './src/bridge/intentDetector.js';
+import { fetchBackendAssembleContext } from './src/client/backendClient.js';
+import { buildBackendSelectorPrompt } from './src/engine/assemble.js';
+import { buildCragExplainMemoryText } from './src/commands/cragExplainMemory.js';
 
 const COG_RAG_BASE = 'http://127.0.0.1:8000';
 
@@ -284,7 +292,7 @@ type RecallHit = {
 };
 
 type RecallIntent = 'session' | 'corpus' | 'general';
-type NaturalAnswerIntent = 'memory_summary' | 'architecture' | 'corpus' | 'chat_recall' | 'none';
+type NaturalAnswerIntent = BridgeNaturalAnswerIntent;
 type NaturalAnswerDraft = {
   intent: NaturalAnswerIntent;
   text: string;
@@ -613,53 +621,7 @@ function detectRecallIntent(query: string): RecallIntent {
 }
 
 function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
-  const q = normalizeNaturalUserQuery(query).toLowerCase().trim();
-  if (!q) return 'none';
-
-  if (
-    q.includes('what do you remember') ||
-    q.includes('what are you remembering') ||
-    q.includes('what do you know about me') ||
-    q.includes('how is your memory')
-  ) {
-    return 'memory_summary';
-  }
-
-  if (
-    q.includes('are you using crag') ||
-    q.includes('do you use crag') ||
-    q.includes('crag lossless memory') ||
-    q.includes('how is your memory organized') ||
-    q.includes('where is this stored') ||
-    q.includes('what is stored in memory.md') ||
-    q.includes('what comes from backend/session memory') ||
-    q.includes('where did this answer come from')
-  ) {
-    return 'architecture';
-  }
-
-  if (
-    q.includes('what did we say earlier') ||
-    q.includes('what was the token') ||
-    q.includes('from before') ||
-    q.includes('quote the earlier') ||
-    q.includes('we discussed')
-  ) {
-    return 'chat_recall';
-  }
-
-  if (
-    q.includes('what can you tell me about') ||
-    q.includes('synopsis') ||
-    q.includes('book') ||
-    q.includes('chapter') ||
-    q.includes('youtube secrets') ||
-    q.includes('from corpus')
-  ) {
-    return 'corpus';
-  }
-
-  return 'none';
+  return detectNaturalIntentBridge(query);
 }
 
 function looksLikeOpaqueToken(value: string): boolean {
@@ -3093,26 +3055,28 @@ export default function register(api: any) {
     handler: async () => {
       const current = await readHealthState();
       const slot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
-      const lines = [
-        'CognitiveRAG Memory Architecture',
-        `- active context engine slot: ${slot}`,
-        '- cognitiverag-memory plugin loaded: yes',
-        '- backend/session memory: used via /session_append_message, /session_upsert_context_item, /session_assemble_context',
-        '- local lossless session layer: plugin-owned raw + compacted session store under session_memory/',
-        '- corpus layer: plugin-owned chunked corpus index under corpus_memory/ (ingest via /crag_corpus_ingest)',
-        '- large-file layer: plugin-owned large_file_store with summaries + excerpt locators (search via /crag_large_search)',
-        `- fallback mirror MEMORY.md active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
-        '- durable facts: selective promoted notes (exact facts) plus optional summaries',
-        '- source truth:',
-        '  - backend_session_memory: CRAG backend/session context',
-        '  - lossless_session_raw: plugin-local exact message storage',
-        '  - lossless_session_compact: plugin-local compacted history summaries with chunk ids',
-        '  - large_file_excerpt: plugin-local large-file excerpt with span locator',
-        '  - corpus_chunk: plugin-local corpus retrieval chunk with file/chunk provenance',
-        '  - fallback_mirror_plugin: plugin-local MEMORY.md',
-        '  - fallback_mirror_workspace: workspace MEMORY.md',
-      ];
-      return { text: lines.join('\n') };
+      const backendProbe = await fetchBackendAssembleContext(
+        COG_RAG_BASE,
+        {
+          sessionId: '__crag_explain__',
+          freshTailCount: 1,
+          budget: 512,
+          query: 'How is your memory organized?',
+          intentFamily: 'architecture_explanation',
+        },
+        1800,
+      ).catch(() => ({
+        status: 0,
+        body: {},
+        explanation: { ok: false, error: 'backend_unreachable' as const },
+      }));
+      return {
+        text: buildCragExplainMemoryText({
+          slot,
+          fallbackMirrorActive: !!current?.fallbackMemoryMirrorActive,
+          explanation: backendProbe.explanation as any,
+        }),
+      };
     },
   });
 
@@ -3261,6 +3225,10 @@ export default function register(api: any) {
           ? Math.max(256, Math.floor(params.tokenBudget))
           : 4096;
         const freshTailCount = 20;
+        const latestUserQueryFromPrompt = normalizeNaturalUserQuery(String((params as any)?.prompt ?? ''));
+        const latestUserQueryForRouting = latestUserQueryFromPrompt || latestUserQueryFromMessages(inputMessages);
+        const preflightIntent = latestUserQueryForRouting ? detectNaturalAnswerIntent(latestUserQueryForRouting) : 'none';
+        const backendIntentFamily = toBackendIntentFamily(preflightIntent);
         api.logger?.info?.(
           '[cognitiverag-memory] assemble input ' +
             JSON.stringify({
@@ -3269,13 +3237,16 @@ export default function register(api: any) {
               inputMessagesCount: inputMessages.length,
               tokenBudget: budget,
               chosenFreshTailCount: freshTailCount,
+              backendIntentFamily,
             }),
         );
 
-        const assemblyRes = await postJson('/session_assemble_context', {
-          session_id: sessionId,
-          fresh_tail_count: freshTailCount,
+        const assemblyRes = await fetchBackendAssembleContext(COG_RAG_BASE, {
+          sessionId,
+          freshTailCount,
           budget,
+          query: latestUserQueryForRouting || undefined,
+          intentFamily: backendIntentFamily,
         });
         api.logger?.info?.(
           '[cognitiverag-memory] assemble backend ' +
@@ -3300,11 +3271,19 @@ export default function register(api: any) {
               summariesCountReturned: Array.isArray(assemblyRes?.body?.summaries)
                 ? assemblyRes.body.summaries.length
                 : 0,
+              backendExplanationValid: !!assemblyRes?.explanation?.ok,
+              backendExplanationError: assemblyRes?.explanation?.ok ? null : assemblyRes?.explanation?.error ?? null,
             }),
         );
 
         const shaped = shapeAssembleResponse(assemblyRes, budget);
         let { messages, systemPromptAddition, estimatedTokens, totalTokens } = shaped;
+        const backendSelectorPrompt = buildBackendSelectorPrompt(assemblyRes.explanation);
+        if (backendSelectorPrompt) {
+          systemPromptAddition = systemPromptAddition
+            ? `${systemPromptAddition}\n\n${backendSelectorPrompt}`
+            : backendSelectorPrompt;
+        }
         let naturalRoutingMessage: any = null;
         let naturalIntent: NaturalAnswerIntent = 'none';
         let naturalDraft: NaturalAnswerDraft | null = null;
@@ -3332,7 +3311,6 @@ export default function register(api: any) {
           );
         }
         try {
-          const latestUserQueryFromPrompt = normalizeNaturalUserQuery(String((params as any)?.prompt ?? ''));
           const fallback = await summarizeFallback({
             pluginMemoryPath: memoryFile,
             workspaceMemoryPath: workspaceMemoryFile,
@@ -3345,7 +3323,7 @@ export default function register(api: any) {
             await writeHealthState({ fallbackMemoryMirrorActive: true });
           }
         if (fallbackSummary) {
-          const latestUserQueryForIntent = latestUserQueryFromPrompt || latestUserQueryFromMessages(inputMessages);
+          const latestUserQueryForIntent = latestUserQueryForRouting;
           naturalIntent = latestUserQueryForIntent ? detectNaturalAnswerIntent(latestUserQueryForIntent) : 'none';
           let fallbackPrompt = `Fallback memory mirror (durable user-noted facts):\n${fallbackSummary}`;
           if (naturalIntent === 'corpus') {
@@ -3376,7 +3354,7 @@ export default function register(api: any) {
           ? `${systemPromptAddition}\n\n${architecturePrompt}`
           : architecturePrompt;
 
-        const latestUserQuery = latestUserQueryFromPrompt || latestUserQueryFromMessages(inputMessages);
+        const latestUserQuery = latestUserQueryForRouting;
         if (latestUserQuery) {
           naturalIntent = detectNaturalAnswerIntent(latestUserQuery);
           const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
