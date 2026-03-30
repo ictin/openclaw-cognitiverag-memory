@@ -3127,6 +3127,8 @@ export default function register(api: any) {
           fallbackMirrorActive: !!current?.fallbackMemoryMirrorActive,
           explanation: backendProbe.explanation as any,
           onlineLaneStatus: current?.onlineLaneStatus ?? 'unknown',
+          discoveryPlan: (backendProbe as any)?.body?.discovery_plan ?? null,
+          discovery: (backendProbe as any)?.body?.discovery ?? null,
         }),
       };
     },
@@ -3152,6 +3154,7 @@ export default function register(api: any) {
         `- contextEngine slot: ${slot}`,
         `- plugin loaded: yes`,
         `- backend reachable: ${current?.backendReachable ? 'yes' : 'no'}`,
+        '- backend ownership: canonical intelligence layer',
         `- mode: ${current?.mode ?? 'unknown'}`,
         `- last success: ${current?.lastSuccessAt ?? 'never'}`,
         `- last failure: ${current?.lastFailAt ?? 'never'}`,
@@ -3166,6 +3169,7 @@ export default function register(api: any) {
         `- online lane last checked: ${current?.onlineLaneLastCheckedAt ?? 'never'}`,
         `- online lane last error: ${current?.onlineLaneLastError ?? 'none'}`,
         `- fallback memory mirror active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
+        '- markdown mirrors role: support/export/debug (not canonical intelligence)',
       ];
       return { text: lines.join('\n') };
     },

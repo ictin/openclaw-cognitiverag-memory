@@ -22,12 +22,17 @@ const text = buildCragExplainMemoryText({
   fallbackMirrorActive: true,
   explanation,
   onlineLaneStatus: 'enabled',
+  discoveryPlan: { risk_mode: 'medium', expected_sources: ['web', 'corpus'] },
+  discovery: { top_discoveries: [{ id: 'd1' }, { id: 'd2' }] },
 });
 
 assert.match(text, /online lane status:\s*enabled/i);
 assert.match(text, /backend-derived source classes:\s*corpus, web evidence, web promoted/i);
-assert.match(text, /web_evidence:\s*backend-cached raw web evidence/i);
-assert.match(text, /web_promoted_fact:\s*backend-promoted reusable web-backed fact/i);
+assert.match(text, /backend ownership:\s*canonical memory\/retrieval\/discovery intelligence/i);
+assert.match(text, /web evidence:\s*backend-cached raw web evidence/i);
+assert.match(text, /web promoted:\s*backend-promoted reusable web-backed facts/i);
 assert.match(text, /mirrors are supporting\/export layers, not canonical intelligence/i);
+assert.match(text, /backend discovery plan surfaced:\s*yes/i);
+assert.match(text, /bounded discovery items:\s*2/i);
 
 console.log('plugin web memory truthfulness test passed');
