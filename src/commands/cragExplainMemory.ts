@@ -5,6 +5,8 @@ export function buildCragExplainMemoryText(args: {
   fallbackMirrorActive: boolean;
   explanation: ContractValidation;
   onlineLaneStatus?: OnlineLaneStatus;
+  runtimeEntryPath?: string;
+  runtimePluginRoot?: string;
   discoveryPlan?: unknown;
   discovery?: unknown;
 }): string {
@@ -15,6 +17,8 @@ export function buildCragExplainMemoryText(args: {
     'CognitiveRAG Memory Architecture',
     `- active context engine slot: ${args.slot}`,
     '- cognitiverag-memory plugin loaded: yes',
+    `- runtime entry path: ${args.runtimeEntryPath ?? 'unknown'}`,
+    `- runtime plugin root: ${args.runtimePluginRoot ?? 'unknown'}`,
     '- backend ownership: canonical memory/retrieval/discovery intelligence',
     `- online lane status: ${args.onlineLaneStatus ?? 'unknown'}`,
     '- backend/session memory: primary CRAG context layer',

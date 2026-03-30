@@ -63,6 +63,8 @@ global.fetch = async (url, init = {}) => {
 try {
   const out = await statusCmd.handler({});
   const text = String(out?.text ?? '');
+  assert.match(text, /runtime entry path:\s*.*index\.ts/i);
+  assert.match(text, /runtime plugin root:\s*.+/i);
   assert.match(text, /online lane status:\s*enabled/i);
   assert.match(text, /online source classes:\s*web evidence, web promoted/i);
 } finally {

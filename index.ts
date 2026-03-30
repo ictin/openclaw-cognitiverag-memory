@@ -917,6 +917,7 @@ async function postJson(path: string, body: any, timeoutMs = 3000) {
 
 export default function register(api: any) {
   const pluginRoot = path.resolve(path.dirname(api?.source ?? api?.path ?? path.resolve('.')));
+  const runtimeEntryPath = String(api?.source ?? api?.path ?? 'unknown');
   const healthFile = path.join(pluginRoot, 'crag-health-state.json');
   const memoryFile = path.join(pluginRoot, 'MEMORY.md');
   const workspaceMemoryFile = path.join(process.cwd(), 'MEMORY.md');
@@ -3127,6 +3128,8 @@ export default function register(api: any) {
           fallbackMirrorActive: !!current?.fallbackMemoryMirrorActive,
           explanation: backendProbe.explanation as any,
           onlineLaneStatus: current?.onlineLaneStatus ?? 'unknown',
+          runtimeEntryPath,
+          runtimePluginRoot: pluginRoot,
           discoveryPlan: (backendProbe as any)?.body?.discovery_plan ?? null,
           discovery: (backendProbe as any)?.body?.discovery ?? null,
         }),
@@ -3153,6 +3156,8 @@ export default function register(api: any) {
         'CognitiveRAG Status',
         `- contextEngine slot: ${slot}`,
         `- plugin loaded: yes`,
+        `- runtime entry path: ${runtimeEntryPath}`,
+        `- runtime plugin root: ${pluginRoot}`,
         `- backend reachable: ${current?.backendReachable ? 'yes' : 'no'}`,
         '- backend ownership: canonical intelligence layer',
         `- mode: ${current?.mode ?? 'unknown'}`,

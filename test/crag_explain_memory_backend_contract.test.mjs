@@ -60,6 +60,8 @@ global.fetch = async (url, init = {}) => {
 try {
   const out = await explain.handler({});
   const text = String(out?.text ?? '');
+  assert.match(text, /runtime entry path:\s*.*index\.ts/i);
+  assert.match(text, /runtime plugin root:\s*.+/i);
   assert.match(text, /backend selector explanation:\s*valid/i);
   assert.match(text, /selector intent family:\s*architecture_explanation/i);
   assert.match(text, /promoted:\s*44/i);
@@ -68,4 +70,3 @@ try {
 }
 
 console.log('crag explain memory backend contract test passed');
-
