@@ -21,6 +21,11 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
     q.includes('are you using crag') ||
     q.includes('do you use crag') ||
     q.includes('crag lossless memory') ||
+    q.includes('explain your memory layers') ||
+    q.includes('distinguish memory.md') ||
+    q.includes('backend memory, corpus memory, web evidence') ||
+    q.includes('which evidence sources would you check next') ||
+    q.includes('session memory, promoted memory, corpus, or web') ||
     q.includes('how is your memory organized') ||
     q.includes('where is this stored') ||
     q.includes('what is stored in memory.md') ||
@@ -61,4 +66,3 @@ export function toBackendIntentFamily(intent: NaturalAnswerIntent): string | nul
   if (intent === 'chat_recall') return 'exact_recall';
   return null;
 }
-

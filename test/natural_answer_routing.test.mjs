@@ -223,5 +223,33 @@ assert.equal(architecturePrompt, '', 'architecture overview should also hard sho
 assert.match(JSON.stringify(architecture?.messages ?? []), /HARD_SHORT_CIRCUIT_INTENT=architecture_overview/i);
 assert.match(JSON.stringify(architecture?.messages ?? []), /CRAG\/lossless memory is active/i);
 
+const evidenceSources = await engine.assemble({
+  sessionId,
+  sessionKey: 'agent:main:natural-routing',
+  prompt: 'For this topic, which evidence sources would you check next: session memory, promoted memory, corpus, or web?',
+  messages: [
+    {
+      role: 'user',
+      content:
+        'For this topic, which evidence sources would you check next: session memory, promoted memory, corpus, or web?',
+    },
+  ],
+  tokenBudget: 4096,
+});
+const evidencePrompt = String(evidenceSources?.systemPromptAddition ?? '');
+assert.equal(evidencePrompt, '', 'evidence-source query should use architecture deterministic short-circuit');
+assert.match(
+  JSON.stringify(evidenceSources?.messages ?? []),
+  /HARD_SHORT_CIRCUIT_INTENT=architecture_overview/i,
+);
+assert.match(
+  JSON.stringify(evidenceSources?.messages ?? []),
+  /Evidence-source order for this topic[\s\S]*session memory[\s\S]*promoted memory[\s\S]*corpus\/large-file[\s\S]*web memory/i,
+);
+assert.match(
+  JSON.stringify(evidenceSources?.messages ?? []),
+  /raw web evidence[\s\S]*web promoted memory/i,
+);
+
 restoreFetch();
 console.log('natural answer routing test passed');

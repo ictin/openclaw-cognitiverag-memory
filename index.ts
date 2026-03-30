@@ -2208,14 +2208,41 @@ export default function register(api: any) {
     }
 
     if (intent === 'architecture') {
+      const q = normalizeNaturalUserQuery(query).toLowerCase();
+      const asksSourceOrder =
+        q.includes('which evidence sources would you check next') ||
+        q.includes('session memory, promoted memory, corpus, or web');
+      if (asksSourceOrder) {
+        const text = [
+          'Evidence-source order for this topic (most useful first):',
+          '1. session memory: first for current objective, latest decisions, and immediate constraints.',
+          '2. promoted memory: second for durable normalized conclusions and stable reusable facts.',
+          '3. corpus/large-file memory: third for source-backed local document evidence and exact excerpts.',
+          '4. web memory: last-mile freshness/verification when local evidence is missing or time-sensitive.',
+          '',
+          'Web source-class rule:',
+          '- raw web evidence: fresh fetched sources/snippets for current checks.',
+          '- web promoted memory: previously promoted reusable web-backed conclusions with provenance.',
+          '',
+          'Markdown mirrors (MEMORY.md + daily notes) remain support/export/debug surfaces, not canonical memory.',
+        ].join('\n');
+        return {
+          intent,
+          text,
+          sourceBasis: ['runtime architecture contract (source-prioritization policy)'],
+        };
+      }
       const text = [
         'Yes. CRAG/lossless memory is active.',
         '',
         'Memory layers (primary -> supporting):',
         '- cognitiverag-memory context engine (active, primary orchestrator).',
         '- backend/session CRAG memory (primary turn context).',
+        '- backend promoted memory (durable normalized reusable memory).',
         '- local lossless session memory (raw + compacted history for recall/quote/expand).',
         '- corpus + large-file retrieval (book/file excerpts with provenance).',
+        '- web evidence memory (fresh fetched external evidence).',
+        '- web promoted memory (promoted reusable web-backed conclusions).',
         '- MEMORY.md and daily notes (fallback/user-facing mirrors only).',
         '',
         'Mirror files help with human-readable continuity, but they are not the whole memory system.',
@@ -3413,7 +3440,7 @@ export default function register(api: any) {
             : fallbackPrompt;
         }
         const architecturePrompt =
-          'Memory architecture truth: cognitiverag-memory is active. Backend/session memory is primary CRAG context; plugin-local lossless session layer stores exact + compacted history; corpus_memory stores normal chunked files; large_file_store keeps oversized files as bounded summaries + excerpt locators; MEMORY.md fallback mirror is auxiliary.';
+          'Memory architecture truth: cognitiverag-memory is active as the OpenClaw adapter. Backend stores are canonical: backend/session CRAG memory, backend promoted memory, corpus memory, large-file memory, web evidence memory, and web promoted memory. Local lossless session storage supports exact recall and export. MEMORY.md and memory/*.md are support/export/debug mirrors only, not canonical intelligence.';
         systemPromptAddition = systemPromptAddition
           ? `${systemPromptAddition}\n\n${architecturePrompt}`
           : architecturePrompt;
