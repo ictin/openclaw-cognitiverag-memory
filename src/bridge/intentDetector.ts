@@ -1,4 +1,4 @@
-export type NaturalAnswerIntent = 'memory_summary' | 'architecture' | 'corpus' | 'chat_recall' | 'none';
+export type NaturalAnswerIntent = 'memory_summary' | 'memory_topic' | 'architecture' | 'corpus' | 'chat_recall' | 'knowledge' | 'none';
 
 export function normalizeNaturalUserQuery(input: string): string {
   return String(input ?? '').replace(/\s+/g, ' ').trim();
@@ -7,6 +7,16 @@ export function normalizeNaturalUserQuery(input: string): string {
 export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
   const q = normalizeNaturalUserQuery(query).toLowerCase();
   if (!q) return 'none';
+
+  if (
+    /what do you remember about .+/.test(q) ||
+    /what do you remember of .+/.test(q) ||
+    /do you remember anything about .+/.test(q) ||
+    /do you remember any book about .+/.test(q) ||
+    q.includes('do you remember any complete book')
+  ) {
+    return 'memory_topic';
+  }
 
   if (
     q.includes('what do you remember') ||
@@ -46,6 +56,14 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
   }
 
   if (
+    /what do you know about .+/.test(q) ||
+    /do you know anything about .+/.test(q) ||
+    /what do you know of .+/.test(q)
+  ) {
+    return 'knowledge';
+  }
+
+  if (
     q.includes('what can you tell me about') ||
     q.includes('synopsis') ||
     q.includes('book') ||
@@ -61,6 +79,7 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
 
 export function toBackendIntentFamily(intent: NaturalAnswerIntent): string | null {
   if (intent === 'memory_summary') return 'memory_summary';
+  if (intent === 'memory_topic') return 'memory_summary';
   if (intent === 'architecture') return 'architecture_explanation';
   if (intent === 'corpus') return 'corpus_overview';
   if (intent === 'chat_recall') return 'exact_recall';

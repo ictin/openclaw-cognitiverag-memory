@@ -2016,6 +2016,38 @@ export default function register(api: any) {
 
       const lines: string[] = [`Natural answer routing intent: ${intent}`];
     const query = normalizeNaturalUserQuery(userQuery);
+    const isLowValueMemoryNoise = (line: string): boolean => {
+      const text = String(line ?? '').toLowerCase();
+      if (!text.trim()) return true;
+      return (
+        text.includes('sender (untrusted metadata)') ||
+        text.includes('gateway call failed') ||
+        text.includes('fetch failed') ||
+        text.includes('getaddrinfo') ||
+        text.includes('enotfound') ||
+        text.includes('provider error') ||
+        text.includes('abnormal closure') ||
+        text.includes('toolresult') ||
+        text.includes('tool call') ||
+        text.includes('traceback') ||
+        text.includes('error:')
+      );
+    };
+
+    const extractRememberTopic = (q: string): string => {
+      const matchers = [
+        /what do you remember about (.+)$/i,
+        /what do you remember of (.+)$/i,
+        /do you remember anything about (.+)$/i,
+        /do you remember any book about (.+)$/i,
+        /do you remember any complete book about (.+)$/i,
+      ];
+      for (const re of matchers) {
+        const m = q.match(re);
+        if (m?.[1]) return m[1].trim().replace(/[?.!]+$/g, '');
+      }
+      return '';
+    };
 
     if (intent === 'memory_summary') {
       const pluginBullets = await collectMemoryBullets(memoryFile);
@@ -2050,7 +2082,7 @@ export default function register(api: any) {
       );
       const recentMeaningful = rawEntries
         .map((entry) => buildSnippet(entry.text, 160))
-        .filter((line) => line && !looksLikeOpaqueToken(line) && !line.toLowerCase().includes('sender (untrusted metadata)'))
+        .filter((line) => line && !looksLikeOpaqueToken(line) && !isLowValueMemoryNoise(line))
         .slice(-4);
       if (recentMeaningful.length) {
         lines.push('- recent meaningful session snippets:');
@@ -2058,6 +2090,16 @@ export default function register(api: any) {
       }
       lines.push('Answer quality rule: include at most 2 opaque token examples in normal summaries, and prioritize meaningful facts over storage internals.');
       lines.push('Hard format rule: use exactly 6 sections titled Memory stack in use (primary -> supporting), About you, Recent durable facts, Current conversation context, Books/corpus I can draw from, and What I am still missing.');
+    } else if (intent === 'memory_topic') {
+      const topic = extractRememberTopic(query);
+      lines.push('Auto memory-topic evidence retrieval:');
+      lines.push(`- query topic: ${topic || 'none (general remembered scope)'}`);
+      lines.push('- retrieval lanes: promoted/session memory first, then corpus/large-file evidence.');
+      lines.push('- remember-vs-know rule: "remember" must come from stored/retrieved evidence only.');
+      lines.push('- if stored evidence is missing, say so explicitly and optionally offer general knowledge as separate.');
+      if (/do you remember any complete book/i.test(query)) {
+        lines.push('- complete-book rule: explain books are stored/retrieved as chunked corpus evidence with provenance, not one monolithic memory item.');
+      }
     } else if (intent === 'architecture') {
       lines.push('Auto architecture truth contract:');
       lines.push('- cognitiverag-memory is active context engine when slot says so.');
@@ -2107,6 +2149,11 @@ export default function register(api: any) {
         lines.push(`- compact ${hit.chunkId} seq ${hit.seqStart}-${hit.seqEnd} score=${hit.score}`);
       });
       lines.push('Answer contract: answer naturally, and include source basis (session raw vs compact) when recall confidence depends on it.');
+    } else if (intent === 'knowledge') {
+      lines.push('Know-vs-remember truth rule:');
+      lines.push('- "know" responses may use general model knowledge.');
+      lines.push('- do not present generic knowledge as stored memory.');
+      lines.push('- only claim remembered/stored facts when retrieval evidence exists.');
     }
 
     const prompt = lines.join('\n').trim();
@@ -2118,6 +2165,37 @@ export default function register(api: any) {
     const intent = detectNaturalAnswerIntent(userQuery);
     if (intent === 'none') return null;
     const query = normalizeNaturalUserQuery(userQuery);
+    const isLowValueMemoryNoise = (line: string): boolean => {
+      const text = String(line ?? '').toLowerCase();
+      if (!text.trim()) return true;
+      return (
+        text.includes('sender (untrusted metadata)') ||
+        text.includes('gateway call failed') ||
+        text.includes('fetch failed') ||
+        text.includes('getaddrinfo') ||
+        text.includes('enotfound') ||
+        text.includes('provider error') ||
+        text.includes('abnormal closure') ||
+        text.includes('toolresult') ||
+        text.includes('tool call') ||
+        text.includes('traceback') ||
+        text.includes('error:')
+      );
+    };
+    const extractRememberTopic = (q: string): string => {
+      const matchers = [
+        /what do you remember about (.+)$/i,
+        /what do you remember of (.+)$/i,
+        /do you remember anything about (.+)$/i,
+        /do you remember any book about (.+)$/i,
+        /do you remember any complete book about (.+)$/i,
+      ];
+      for (const re of matchers) {
+        const m = q.match(re);
+        if (m?.[1]) return m[1].trim().replace(/[?.!]+$/g, '');
+      }
+      return '';
+    };
 
     const short = (input: string, max = 1700) => {
       const text = String(input ?? '').replace(/\s+\n/g, '\n').trim();
@@ -2151,7 +2229,7 @@ export default function register(api: any) {
       const rawEntries = await readRawEntries(sessionId);
       const recentSession = rawEntries
         .map((entry) => buildSnippet(entry.text, 170))
-        .filter((line) => line && !looksLikeOpaqueToken(line) && !line.toLowerCase().includes('sender (untrusted metadata)'))
+        .filter((line) => line && !looksLikeOpaqueToken(line) && !isLowValueMemoryNoise(line))
         .slice(-4);
       const profile = nonToken
         .filter((line) => /(prefer|preference|like|goal|focus|workflow|project|stack|automation|schedule)/i.test(line))
@@ -2183,7 +2261,7 @@ export default function register(api: any) {
         ...(durable.length
           ? durable.map((line) => `- ${buildSnippet(line, 180)}`)
           : ['- Durable memory exists, but most entries are still token-like and need curation.']),
-        ...(tokenCount > 0 ? [`- Opaque token entries available on request: ${tokenCount}`] : []),
+        ...(tokenCount > 0 ? ['- Opaque validation tokens are intentionally hidden in normal summaries (available only on explicit request).'] : []),
         '',
         'Current conversation context:',
         ...(recentSession.length ? recentSession.map((line) => `- ${line}`) : ['- No rich recent session snippets available yet.']),
@@ -2204,6 +2282,81 @@ export default function register(api: any) {
           titles.length ? 'corpus/large-file index + excerpts' : 'no indexed corpus titles',
           'markdown mirrors (fallback summaries)',
         ],
+      };
+    }
+
+    if (intent === 'memory_topic') {
+      const topic = extractRememberTopic(query);
+      const asksCompleteBook = /do you remember any complete book/i.test(query);
+      const retrievalQuery = topic || query;
+      const quote = await collectSessionQuoteHits(sessionId, retrievalQuery, false, 4);
+      const promotedHits = quote.raw
+        .slice(0, 2)
+        .map((hit) => ({ source: 'lossless_session_raw', text: hit.text, score: hit.score }));
+      const largeHits = (await collectLargeFileRecallHits(retrievalQuery, 4))
+        .filter((hit) => !isLowValueMemoryNoise(hit.text))
+        .slice(0, 3);
+      const corpusHits = (await collectCorpusRecallHits(retrievalQuery, 4))
+        .filter((hit) => !isLowValueMemoryNoise(hit.text))
+        .slice(0, 3);
+      const merged = rankRecallHits(retrievalQuery, [...largeHits, ...corpusHits]).ranked.slice(0, 3);
+
+      if (asksCompleteBook) {
+        const corpusStore = await readCorpusStore();
+        const largeStore = await readLargeFileStore();
+        const titles = Array.from(
+          new Set(
+            [...corpusStore.docs.map((d) => d.title), ...largeStore.docs.map((d) => d.title)]
+              .map((t) => String(t ?? '').trim())
+              .filter(Boolean),
+          ),
+        ).slice(0, 4);
+        const lines = [
+          'I do not store complete books as one monolithic memory item.',
+          'Books are stored as chunked corpus/large-file evidence, and I retrieve passages with provenance when needed.',
+          '',
+          'Retrieved remembered book examples:',
+          ...(titles.length ? titles.map((t) => `- ${buildSnippet(t, 140)}`) : ['- No indexed book titles are currently available.']),
+        ];
+        return {
+          intent,
+          text: short(lines.join('\n')),
+          sourceBasis: ['corpus/large-file indexed titles', 'retrieval-by-passage memory model'],
+        };
+      }
+
+      if (merged.length || promotedHits.length) {
+        const lines = [
+          `Remembered evidence for topic: ${topic || retrievalQuery}`,
+          ...(promotedHits.length
+            ? promotedHits.map((hit) => `- session memory: ${buildSnippet(hit.text, 170)}`)
+            : []),
+          ...merged.map((entry) => {
+            const hit = entry.hit;
+            const src = hit.source === 'large_file_excerpt' ? 'large-file memory' : 'corpus memory';
+            const prov = [hit.corpusPath ?? '', hit.chunkId ?? ''].filter(Boolean).join(' | ');
+            return `- ${src}${prov ? ` (${prov})` : ''}: ${buildSnippet(hit.text, 170)}`;
+          }),
+          '',
+          'Source class: remembered stored evidence (session/corpus/large-file).',
+        ];
+        return {
+          intent,
+          text: short(lines.join('\n')),
+          sourceBasis: [
+            promotedHits.length ? 'session memory retrieval' : '',
+            merged.length ? 'corpus/large-file retrieval' : '',
+          ].filter(Boolean),
+        };
+      }
+
+      return {
+        intent,
+        text: short(
+          `I do not currently have stored remembered evidence for "${topic || retrievalQuery}". ` +
+            'If you want, I can still provide general background knowledge, but that would not be from stored memory.',
+        ),
+        sourceBasis: ['no stored memory evidence found for topic'],
       };
     }
 
@@ -2331,7 +2484,7 @@ export default function register(api: any) {
 
   const pruneMessagesForDeterministicIntent = (messages: any[], intent: NaturalAnswerIntent): any[] => {
     if (!Array.isArray(messages) || !messages.length) return [];
-    if (intent !== 'memory_summary' && intent !== 'corpus' && intent !== 'architecture') return messages;
+    if (intent !== 'memory_summary' && intent !== 'memory_topic' && intent !== 'corpus' && intent !== 'architecture') return messages;
     const out: any[] = [];
     for (const msg of messages) {
       const role = String(msg?.role ?? '').toLowerCase();
@@ -2368,13 +2521,19 @@ export default function register(api: any) {
     draft: NaturalAnswerDraft | null,
   ): any[] => {
     if (!Array.isArray(messages) || !messages.length || !draft) return messages;
-    if (intent !== 'memory_summary' && intent !== 'corpus' && intent !== 'architecture') return messages;
+    if (intent !== 'memory_summary' && intent !== 'memory_topic' && intent !== 'corpus' && intent !== 'architecture') return messages;
     const out = [...messages];
     for (let i = out.length - 1; i >= 0; i -= 1) {
       const role = String(out[i]?.role ?? '').toLowerCase();
       if (role !== 'user') continue;
       const modeLabel =
-        intent === 'memory_summary' ? 'memory_summary' : intent === 'corpus' ? 'corpus_overview' : 'architecture_overview';
+        intent === 'memory_summary'
+          ? 'memory_summary'
+          : intent === 'memory_topic'
+            ? 'memory_topic'
+            : intent === 'corpus'
+              ? 'corpus_overview'
+              : 'architecture_overview';
       const strictPrompt = [
         `DETERMINISTIC_RESPONSE_MODE=${modeLabel}`,
         `Original user question: ${normalizeNaturalUserQuery(query)}`,
@@ -2400,9 +2559,15 @@ export default function register(api: any) {
     query: string,
     draft: NaturalAnswerDraft,
   ): any[] => {
-    if (intent !== 'memory_summary' && intent !== 'corpus' && intent !== 'architecture') return [];
+    if (intent !== 'memory_summary' && intent !== 'memory_topic' && intent !== 'corpus' && intent !== 'architecture') return [];
     const modeLabel =
-      intent === 'memory_summary' ? 'memory_summary' : intent === 'corpus' ? 'corpus_overview' : 'architecture_overview';
+      intent === 'memory_summary'
+        ? 'memory_summary'
+        : intent === 'memory_topic'
+          ? 'memory_topic'
+          : intent === 'corpus'
+            ? 'corpus_overview'
+            : 'architecture_overview';
     const sourceSummary = Array.isArray(draft.sourceBasis) && draft.sourceBasis.length
       ? draft.sourceBasis.map((line) => `- ${line}`).join('\n')
       : '- unknown';
@@ -3453,10 +3618,12 @@ export default function register(api: any) {
           if (naturalRoutingPrompt) {
             deterministicComposerActive =
               !!naturalDraft &&
-              (naturalIntent === 'memory_summary' || naturalIntent === 'corpus' || naturalIntent === 'architecture');
+              (naturalIntent === 'memory_summary' || naturalIntent === 'memory_topic' || naturalIntent === 'corpus' || naturalIntent === 'architecture');
             const hardContract = deterministicComposerActive
               ? naturalIntent === 'memory_summary'
                 ? '\n\nDeterministic final-answer contract for memory summary:\n- Output six sections exactly: Memory stack in use (primary -> supporting); About you; Recent durable facts; Current conversation context; Books/corpus I can draw from; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Keep CRAG/session/corpus layers primary and markdown mirrors explicitly secondary.'
+                : naturalIntent === 'memory_topic'
+                  ? '\n\nDeterministic final-answer contract for topic-scoped remember prompts:\n- Use only stored/retrieved evidence for "remember" claims (session/promoted/corpus/large-file).\n- If stored evidence is absent, state that clearly and separate any optional general-knowledge fallback.\n- Do not replace topic-scoped answer with generic memory-stack dump unless user explicitly asked for architecture.'
                 : naturalIntent === 'corpus'
                   ? '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
                   : '\n\nDeterministic final-answer contract for architecture/source questions:\n- Answer from layered memory truth contract directly.\n- Keep CRAG/lossless/corpus layers explicit and markdown mirrors secondary.\n- Do not emit provider-error or empty fallback text for this intent.'
