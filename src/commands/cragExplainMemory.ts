@@ -23,6 +23,9 @@ export function buildCragExplainMemoryText(args: {
     `- online lane status: ${args.onlineLaneStatus ?? 'unknown'}`,
     '- backend/session memory: primary CRAG context layer',
     '- backend promoted memory: durable normalized reusable memory',
+    '- backend skill memory: typed principles/templates/examples/rubrics/anti-patterns/workflows',
+    '- backend execution memory: stored skill-run execution cases linked to artifact usage',
+    '- backend evaluation memory: rubric-scored quality cases linked to execution runs',
     '- local lossless session layer: raw + compacted session memory for recall/quote/expand',
     '- corpus layer: chunked document retrieval with provenance',
     '- large-file layer: bounded excerpt retrieval with locators',
@@ -76,6 +79,9 @@ export function buildCragExplainMemoryText(args: {
   lines.push('- source truth:');
   lines.push('  - backend/session: primary CRAG conversation memory');
   lines.push('  - promoted: backend durable promoted memory');
+  lines.push('  - skill memory: backend typed skill artifacts and task-aware packs');
+  lines.push('  - execution memory: backend stored skill-run cases');
+  lines.push('  - evaluation memory: backend rubric-based quality evaluations');
   lines.push('  - corpus: backend corpus retrieval with provenance');
   lines.push('  - large-file: backend bounded large-file excerpts');
   lines.push('  - web evidence: backend-cached raw web evidence (freshness-sensitive)');

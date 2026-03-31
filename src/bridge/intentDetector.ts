@@ -1,4 +1,14 @@
-export type NaturalAnswerIntent = 'memory_summary' | 'memory_topic' | 'architecture' | 'corpus' | 'chat_recall' | 'knowledge' | 'none';
+export type NaturalAnswerIntent =
+  | 'memory_summary'
+  | 'memory_topic'
+  | 'architecture'
+  | 'corpus'
+  | 'chat_recall'
+  | 'knowledge'
+  | 'skill_generation'
+  | 'skill_explain'
+  | 'skill_evaluation'
+  | 'none';
 
 export function normalizeNaturalUserQuery(input: string): string {
   return String(input ?? '').replace(/\s+/g, ' ').trim();
@@ -40,7 +50,8 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
     q.includes('where is this stored') ||
     q.includes('what is stored in memory.md') ||
     q.includes('what comes from backend/session memory') ||
-    q.includes('where did this answer come from')
+    q.includes('where did this answer come from') ||
+    q.includes('from memory vs corpus')
   ) {
     return 'architecture';
   }
@@ -53,6 +64,32 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
     q.includes('we discussed')
   ) {
     return 'chat_recall';
+  }
+
+  if (
+    q.includes('write a 30-second recipe short') ||
+    q.includes('write a 30 second recipe short') ||
+    q.includes('give me a storyboard for it') ||
+    q.includes('give me a storyboard')
+  ) {
+    return 'skill_generation';
+  }
+
+  if (
+    q.includes('which principles/templates/examples/rubric/anti-patterns you used') ||
+    q.includes('which principles you used') ||
+    q.includes('which templates you used')
+  ) {
+    return 'skill_explain';
+  }
+
+  if (
+    q.includes('score a generated output with a rubric') ||
+    q.includes('score this output with a rubric') ||
+    q.includes('evaluate this output with a rubric') ||
+    q.includes('score the previous output with a rubric')
+  ) {
+    return 'skill_evaluation';
   }
 
   if (
@@ -83,5 +120,6 @@ export function toBackendIntentFamily(intent: NaturalAnswerIntent): string | nul
   if (intent === 'architecture') return 'architecture_explanation';
   if (intent === 'corpus') return 'corpus_overview';
   if (intent === 'chat_recall') return 'exact_recall';
+  if (intent === 'skill_generation' || intent === 'skill_explain' || intent === 'skill_evaluation') return 'planning';
   return null;
 }

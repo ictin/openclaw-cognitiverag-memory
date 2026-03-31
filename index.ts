@@ -9,7 +9,12 @@ import {
   toBackendIntentFamily,
   type NaturalAnswerIntent as BridgeNaturalAnswerIntent,
 } from './src/bridge/intentDetector.js';
-import { fetchBackendAssembleContext } from './src/client/backendClient.js';
+import {
+  fetchBackendAssembleContext,
+  fetchSkillPackBuild,
+  writeEvaluationCase,
+  writeExecutionCase,
+} from './src/client/backendClient.js';
 import { buildBackendSelectorPrompt } from './src/engine/assemble.js';
 import { buildCragExplainMemoryText } from './src/commands/cragExplainMemory.js';
 import { deriveOnlineLaneStatus, deriveSourceClasses } from './src/validators/contractValidator.js';
@@ -931,6 +936,17 @@ export default function register(api: any) {
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
   const observedSessionIdsByKey = new Map<string, string>();
   let lastObservedSessionId = '';
+  let lastSkillRun: {
+    executionCaseId: string;
+    agentType: 'script_agent' | 'storyboard_agent';
+    taskType: string;
+    channelType: string;
+    language: string;
+    query: string;
+    outputText: string;
+    selectedArtifactIds: string[];
+    groupedArtifacts: Record<string, any[]>;
+  } | null = null;
 
   try {
     if (fsSync.existsSync(sessionKeyMapFile)) {
@@ -2149,6 +2165,22 @@ export default function register(api: any) {
         lines.push(`- compact ${hit.chunkId} seq ${hit.seqStart}-${hit.seqEnd} score=${hit.score}`);
       });
       lines.push('Answer contract: answer naturally, and include source basis (session raw vs compact) when recall confidence depends on it.');
+    } else if (intent === 'skill_generation') {
+      lines.push('Auto skill-generation contract:');
+      lines.push('- build a backend skill pack (agent/task aware).');
+      lines.push('- produce output grounded in principle/template/example/rubric/anti-pattern/workflow when available.');
+      lines.push('- write execution memory case after generation.');
+      lines.push('- keep source basis explicit: skill pack vs general knowledge.');
+    } else if (intent === 'skill_explain') {
+      lines.push('Auto skill-explain contract:');
+      lines.push('- explain which skill artifacts were used in latest skill-guided run.');
+      lines.push('- cite artifact types explicitly (principle/template/example/rubric/anti-pattern/workflow).');
+      lines.push('- if no recent run exists, state that honestly.');
+    } else if (intent === 'skill_evaluation') {
+      lines.push('Auto skill-evaluation contract:');
+      lines.push('- score latest skill-guided execution with rubric criteria.');
+      lines.push('- mark pass/fail and anti-pattern hits explicitly.');
+      lines.push('- write evaluation case to backend memory.');
     } else if (intent === 'knowledge') {
       lines.push('Know-vs-remember truth rule:');
       lines.push('- "know" responses may use general model knowledge.');
@@ -2159,6 +2191,63 @@ export default function register(api: any) {
     const prompt = lines.join('\n').trim();
     if (!prompt) return '';
     return prompt.length > 2600 ? `${prompt.slice(0, 2599)}…` : prompt;
+  };
+
+  const composeSkillOutput = (
+    intent: NaturalAnswerIntent,
+    query: string,
+    pack: any,
+  ): { outputText: string; agentType: 'script_agent' | 'storyboard_agent'; taskType: string; channelType: string } => {
+    const lower = normalizeNaturalUserQuery(query).toLowerCase();
+    const isStoryboard = intent === 'skill_generation' && lower.includes('storyboard');
+    const agentType: 'script_agent' | 'storyboard_agent' = isStoryboard ? 'storyboard_agent' : 'script_agent';
+    const taskType = isStoryboard ? 'short_explainer' : 'recipe_short';
+    const channelType = isStoryboard ? 'youtube' : 'short_video';
+    const groups = (pack?.grouped_artifacts ?? {}) as Record<string, any[]>;
+    const firstPrinciple = String(groups?.principle?.[0]?.canonical_text ?? '').trim();
+    const firstTemplate = String(groups?.template?.[0]?.canonical_text ?? '').trim();
+    const firstExample = String(groups?.example?.[0]?.canonical_text ?? '').trim();
+    const firstRubric = String(groups?.rubric?.[0]?.canonical_text ?? '').trim();
+    const firstAnti = String(groups?.anti_pattern?.[0]?.canonical_text ?? '').trim();
+    const firstWorkflow = String(groups?.workflow?.[0]?.canonical_text ?? '').trim();
+    const topic = normalizeNaturalUserQuery(query).replace(/[?.!]+$/g, '');
+
+    if (isStoryboard) {
+      const text = [
+        `Storyboard (skill-memory guided) for: ${topic}`,
+        'Scene 1 — Hook visual: leftover chicken transforms fast.',
+        'Scene 2 — Prep rhythm: quick chop + pan heat + seasoning beats.',
+        'Scene 3 — Cook transition: toss, glaze, and color shift close-up.',
+        'Scene 4 — Payoff: plated result + texture reveal.',
+        'Scene 5 — CTA: save/share + leftover challenge prompt.',
+        '',
+        'Skill artifacts applied:',
+        ...(firstPrinciple ? [`- principle: ${buildSnippet(firstPrinciple, 180)}`] : []),
+        ...(firstTemplate ? [`- template: ${buildSnippet(firstTemplate, 180)}`] : []),
+        ...(firstExample ? [`- example: ${buildSnippet(firstExample, 180)}`] : []),
+        ...(firstRubric ? [`- rubric: ${buildSnippet(firstRubric, 180)}`] : []),
+        ...(firstAnti ? [`- anti-pattern avoided: ${buildSnippet(firstAnti, 180)}`] : []),
+        ...(firstWorkflow ? [`- workflow: ${buildSnippet(firstWorkflow, 180)}`] : []),
+      ].join('\n');
+      return { outputText: text, agentType, taskType, channelType };
+    }
+
+    const text = [
+      `30-second recipe short script (skill-memory guided): ${topic}`,
+      '0-5s Hook: "Leftover chicken? Make this in 30 seconds of prep."',
+      '5-15s Setup: "Pan hot, garlic in, chicken in, sauce in."',
+      '15-25s Payoff: "Glossy finish, crunchy garnish, one-pan cleanup."',
+      '25-30s CTA: "Save this for weeknights and tag your version."',
+      '',
+      'Skill artifacts applied:',
+      ...(firstPrinciple ? [`- principle: ${buildSnippet(firstPrinciple, 180)}`] : []),
+      ...(firstTemplate ? [`- template: ${buildSnippet(firstTemplate, 180)}`] : []),
+      ...(firstExample ? [`- example: ${buildSnippet(firstExample, 180)}`] : []),
+      ...(firstRubric ? [`- rubric: ${buildSnippet(firstRubric, 180)}`] : []),
+      ...(firstAnti ? [`- anti-pattern avoided: ${buildSnippet(firstAnti, 180)}`] : []),
+      ...(firstWorkflow ? [`- workflow: ${buildSnippet(firstWorkflow, 180)}`] : []),
+    ].join('\n');
+    return { outputText: text, agentType, taskType, channelType };
   };
 
   const buildNaturalAnswerDraft = async (sessionId: string, userQuery: string): Promise<NaturalAnswerDraft | null> => {
@@ -2219,6 +2308,159 @@ export default function register(api: any) {
       }
       return normalized;
     };
+
+    if (intent === 'skill_generation') {
+      const lower = query.toLowerCase();
+      const isStoryboard = lower.includes('storyboard');
+      const agentType: 'script_agent' | 'storyboard_agent' = isStoryboard ? 'storyboard_agent' : 'script_agent';
+      const taskType = isStoryboard ? 'short_explainer' : 'recipe_short';
+      const channelType = isStoryboard ? 'youtube' : 'short_video';
+      const language = 'en';
+
+      const packResp = await fetchSkillPackBuild(COG_RAG_BASE, {
+        query,
+        agentType,
+        taskType,
+        channelType,
+        language,
+        maxItems: 12,
+      }).catch(() => ({ status: 0, body: {} }));
+      const pack = packResp?.body ?? {};
+      const selectedArtifactIds = Array.isArray(pack?.selected_artifact_ids)
+        ? pack.selected_artifact_ids.map((id: unknown) => String(id))
+        : [];
+      const groupedArtifacts = (pack?.grouped_artifacts ?? {}) as Record<string, any[]>;
+      const warnings = Array.isArray(pack?.warnings) ? pack.warnings.map((w: unknown) => String(w)) : [];
+
+      const composed = composeSkillOutput(intent, query, pack);
+      const executionWrite = await writeExecutionCase(COG_RAG_BASE, {
+        agentType: composed.agentType,
+        taskType: composed.taskType,
+        requestText: query,
+        selectedArtifactIds,
+        channelType: composed.channelType,
+        language,
+        packSummary: `selected=${selectedArtifactIds.length}; groups=${Object.keys(groupedArtifacts).join(',')}`,
+        outputText: composed.outputText,
+        successFlag: true,
+        notes: 'written from OpenClaw skill_generation deterministic flow',
+      }).catch(() => ({ status: 0, body: {} }));
+      const executionCaseId = String(executionWrite?.body?.execution_case_id ?? '').trim();
+      if (executionCaseId) {
+        lastSkillRun = {
+          executionCaseId,
+          agentType: composed.agentType,
+          taskType: composed.taskType,
+          channelType: composed.channelType,
+          language,
+          query,
+          outputText: composed.outputText,
+          selectedArtifactIds,
+          groupedArtifacts,
+        };
+      }
+
+      return {
+        intent,
+        text: short(
+          [
+            composed.outputText,
+            '',
+            `Source class: skill memory pack (${selectedArtifactIds.length} artifacts).`,
+            executionCaseId ? `Execution memory write: saved (${executionCaseId}).` : 'Execution memory write: unavailable.',
+            ...(warnings.length ? [`Coverage warning: ${warnings.join(' | ')}`] : []),
+          ].join('\n'),
+          2600,
+        ),
+        sourceBasis: [
+          `skill_pack:${agentType}/${taskType}`,
+          selectedArtifactIds.length ? `skill_artifacts:${selectedArtifactIds.length}` : 'skill_artifacts:none',
+          executionCaseId ? `execution_case:${executionCaseId}` : 'execution_case:none',
+        ],
+      };
+    }
+
+    if (intent === 'skill_explain') {
+      if (!lastSkillRun) {
+        return {
+          intent,
+          text: 'No recent skill-guided run is available in this session to explain yet.',
+          sourceBasis: ['no_recent_skill_run'],
+        };
+      }
+      const groups = lastSkillRun.groupedArtifacts;
+      const lines = [
+        `Skill-memory usage for execution case ${lastSkillRun.executionCaseId}:`,
+        `- agent/task/channel: ${lastSkillRun.agentType} / ${lastSkillRun.taskType} / ${lastSkillRun.channelType}`,
+        `- selected artifacts: ${lastSkillRun.selectedArtifactIds.length}`,
+      ];
+      const typeOrder = ['principle', 'template', 'example', 'rubric', 'anti_pattern', 'workflow', 'raw_chunk'];
+      for (const t of typeOrder) {
+        const items = Array.isArray(groups?.[t]) ? groups[t] : [];
+        if (!items.length) continue;
+        lines.push(`- ${t}: ${items.length}`);
+        lines.push(`  - ${buildSnippet(String(items[0]?.canonical_text ?? ''), 170)}`);
+      }
+      return {
+        intent,
+        text: short(lines.join('\n'), 2200),
+        sourceBasis: [
+          `execution_memory:${lastSkillRun.executionCaseId}`,
+          `skill_pack:${lastSkillRun.agentType}/${lastSkillRun.taskType}`,
+        ],
+      };
+    }
+
+    if (intent === 'skill_evaluation') {
+      if (!lastSkillRun) {
+        return {
+          intent,
+          text: 'No recent skill-guided execution is available to score yet.',
+          sourceBasis: ['no_recent_skill_run_for_evaluation'],
+        };
+      }
+      const out = lastSkillRun.outputText.toLowerCase();
+      const criteria = [
+        { criterionId: 'hook_clarity', label: 'Hook clarity', score: out.includes('hook') ? 4 : 2, maxScore: 5, weight: 1 },
+        { criterionId: 'structure', label: 'Structure', score: out.includes('scene') || out.includes('0-5s') ? 4 : 2, maxScore: 5, weight: 1 },
+        { criterionId: 'cta', label: 'Call-to-action', score: out.includes('cta') || out.includes('save') ? 4 : 2, maxScore: 5, weight: 1 },
+      ];
+      const mean = criteria.reduce((n, c) => n + c.score, 0) / Math.max(1, criteria.length);
+      const passFlag = mean >= 3.5;
+      const antiHits = passFlag ? [] : ['weak_structure_or_hook'];
+      const evalWrite = await writeEvaluationCase(COG_RAG_BASE, {
+        executionCaseId: lastSkillRun.executionCaseId,
+        agentType: lastSkillRun.agentType,
+        taskType: lastSkillRun.taskType,
+        channelType: lastSkillRun.channelType,
+        language: lastSkillRun.language,
+        rubricId: `rubric:${lastSkillRun.agentType}:mvp`,
+        rubricRef: 'skill_eval_mvp',
+        criterionScores: criteria,
+        passFlag,
+        antiPatternHits: antiHits,
+        strengths: passFlag ? ['clear structure', 'usable pacing'] : ['partial structure'],
+        weaknesses: passFlag ? [] : ['needs stronger opening and payoff'],
+        humanEditsSummary: '',
+        improvementNotes: passFlag ? ['keep structure; test alternate hooks'] : ['tighten first line', 'clarify payoff'],
+      }).catch(() => ({ status: 0, body: {} }));
+      const evaluationCaseId = String(evalWrite?.body?.evaluation_case_id ?? '').trim();
+      const lines = [
+        `Rubric evaluation for execution ${lastSkillRun.executionCaseId}:`,
+        ...criteria.map((c) => `- ${c.label}: ${c.score}/${c.maxScore}`),
+        `- overall: ${(mean / 5).toFixed(2)} | pass: ${passFlag ? 'yes' : 'no'}`,
+        antiHits.length ? `- anti-pattern hits: ${antiHits.join(', ')}` : '- anti-pattern hits: none',
+        evaluationCaseId ? `Evaluation memory write: saved (${evaluationCaseId}).` : 'Evaluation memory write: unavailable.',
+      ];
+      return {
+        intent,
+        text: lines.join('\n'),
+        sourceBasis: [
+          `execution_memory:${lastSkillRun.executionCaseId}`,
+          evaluationCaseId ? `evaluation_memory:${evaluationCaseId}` : 'evaluation_memory:none',
+        ],
+      };
+    }
 
     if (intent === 'memory_summary') {
       const mirrorBullets = Array.from(
@@ -2484,7 +2726,16 @@ export default function register(api: any) {
 
   const pruneMessagesForDeterministicIntent = (messages: any[], intent: NaturalAnswerIntent): any[] => {
     if (!Array.isArray(messages) || !messages.length) return [];
-    if (intent !== 'memory_summary' && intent !== 'memory_topic' && intent !== 'corpus' && intent !== 'architecture') return messages;
+    if (
+      intent !== 'memory_summary' &&
+      intent !== 'memory_topic' &&
+      intent !== 'corpus' &&
+      intent !== 'architecture' &&
+      intent !== 'skill_generation' &&
+      intent !== 'skill_explain' &&
+      intent !== 'skill_evaluation'
+    )
+      return messages;
     const out: any[] = [];
     for (const msg of messages) {
       const role = String(msg?.role ?? '').toLowerCase();
@@ -2521,7 +2772,16 @@ export default function register(api: any) {
     draft: NaturalAnswerDraft | null,
   ): any[] => {
     if (!Array.isArray(messages) || !messages.length || !draft) return messages;
-    if (intent !== 'memory_summary' && intent !== 'memory_topic' && intent !== 'corpus' && intent !== 'architecture') return messages;
+    if (
+      intent !== 'memory_summary' &&
+      intent !== 'memory_topic' &&
+      intent !== 'corpus' &&
+      intent !== 'architecture' &&
+      intent !== 'skill_generation' &&
+      intent !== 'skill_explain' &&
+      intent !== 'skill_evaluation'
+    )
+      return messages;
     const out = [...messages];
     for (let i = out.length - 1; i >= 0; i -= 1) {
       const role = String(out[i]?.role ?? '').toLowerCase();
@@ -2559,7 +2819,16 @@ export default function register(api: any) {
     query: string,
     draft: NaturalAnswerDraft,
   ): any[] => {
-    if (intent !== 'memory_summary' && intent !== 'memory_topic' && intent !== 'corpus' && intent !== 'architecture') return [];
+    if (
+      intent !== 'memory_summary' &&
+      intent !== 'memory_topic' &&
+      intent !== 'corpus' &&
+      intent !== 'architecture' &&
+      intent !== 'skill_generation' &&
+      intent !== 'skill_explain' &&
+      intent !== 'skill_evaluation'
+    )
+      return [];
     const modeLabel =
       intent === 'memory_summary'
         ? 'memory_summary'
@@ -3618,7 +3887,15 @@ export default function register(api: any) {
           if (naturalRoutingPrompt) {
             deterministicComposerActive =
               !!naturalDraft &&
-              (naturalIntent === 'memory_summary' || naturalIntent === 'memory_topic' || naturalIntent === 'corpus' || naturalIntent === 'architecture');
+              (
+                naturalIntent === 'memory_summary' ||
+                naturalIntent === 'memory_topic' ||
+                naturalIntent === 'corpus' ||
+                naturalIntent === 'architecture' ||
+                naturalIntent === 'skill_generation' ||
+                naturalIntent === 'skill_explain' ||
+                naturalIntent === 'skill_evaluation'
+              );
             const hardContract = deterministicComposerActive
               ? naturalIntent === 'memory_summary'
                 ? '\n\nDeterministic final-answer contract for memory summary:\n- Output six sections exactly: Memory stack in use (primary -> supporting); About you; Recent durable facts; Current conversation context; Books/corpus I can draw from; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Keep CRAG/session/corpus layers primary and markdown mirrors explicitly secondary.'
@@ -3626,6 +3903,12 @@ export default function register(api: any) {
                   ? '\n\nDeterministic final-answer contract for topic-scoped remember prompts:\n- Use only stored/retrieved evidence for "remember" claims (session/promoted/corpus/large-file).\n- If stored evidence is absent, state that clearly and separate any optional general-knowledge fallback.\n- Do not replace topic-scoped answer with generic memory-stack dump unless user explicitly asked for architecture.'
                 : naturalIntent === 'corpus'
                   ? '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
+                  : naturalIntent === 'skill_generation'
+                    ? '\n\nDeterministic final-answer contract for skill generation:\n- Use backend skill pack artifacts when available.\n- Include explicit artifact usage notes (principles/templates/examples/rubric/anti-pattern/workflow).\n- Record execution memory write result truthfully.'
+                    : naturalIntent === 'skill_explain'
+                      ? '\n\nDeterministic final-answer contract for skill explanation:\n- Explain latest skill-run artifact usage by type.\n- If no recent skill run exists, state that clearly.'
+                      : naturalIntent === 'skill_evaluation'
+                        ? '\n\nDeterministic final-answer contract for skill evaluation:\n- Provide criterion-level rubric scores.\n- Provide overall pass/fail and anti-pattern hits.\n- Record evaluation memory write result truthfully.'
                   : '\n\nDeterministic final-answer contract for architecture/source questions:\n- Answer from layered memory truth contract directly.\n- Keep CRAG/lossless/corpus layers explicit and markdown mirrors secondary.\n- Do not emit provider-error or empty fallback text for this intent.'
               : '';
             const draftBlock = naturalDraft

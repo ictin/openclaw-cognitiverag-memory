@@ -118,6 +118,16 @@ const knowPrompt = String(knowNlp?.systemPromptAddition ?? '');
 assert.match(knowPrompt, /Natural answer routing intent:\s*knowledge/i);
 assert.doesNotMatch(JSON.stringify(knowNlp?.messages ?? []), /HARD_SHORT_CIRCUIT_INTENT=memory_topic/i);
 
+const memoryVsCorpus = await engine.assemble({
+  sessionId,
+  sessionKey: 'agent:main:memory-intent-polish',
+  prompt: 'What do you know from memory vs corpus about copywriting?',
+  messages: [{ role: 'user', content: 'What do you know from memory vs corpus about copywriting?' }],
+  tokenBudget: 4096,
+});
+const memoryVsCorpusSerialized = JSON.stringify(memoryVsCorpus?.messages ?? []);
+assert.match(memoryVsCorpusSerialized, /HARD_SHORT_CIRCUIT_INTENT=architecture/i);
+
 const rememberPsych = await engine.assemble({
   sessionId,
   sessionKey: 'agent:main:memory-intent-polish',
@@ -156,6 +166,17 @@ const rememberAllSerialized = JSON.stringify(rememberAll?.messages ?? []);
 assert.match(rememberAllSerialized, /HARD_SHORT_CIRCUIT_INTENT=memory_summary/i);
 assert.doesNotMatch(rememberAllSerialized, /CRAG-MEMORY-PROVE-XYZ-9999/i);
 assert.doesNotMatch(rememberAllSerialized, /ENOTFOUND|fetch failed/i);
+
+const scorePrevious = await engine.assemble({
+  sessionId,
+  sessionKey: 'agent:main:memory-intent-polish',
+  prompt: 'Score the previous output with a rubric and list top improvements.',
+  messages: [{ role: 'user', content: 'Score the previous output with a rubric and list top improvements.' }],
+  tokenBudget: 4096,
+});
+const scoreSerialized = JSON.stringify(scorePrevious?.messages ?? []);
+assert.match(scoreSerialized, /HARD_SHORT_CIRCUIT_INTENT=architecture_overview/i);
+assert.match(scoreSerialized, /No recent skill-guided execution is available to score yet/i);
 
 restoreFetch();
 console.log('memory intent routing polish test passed');
