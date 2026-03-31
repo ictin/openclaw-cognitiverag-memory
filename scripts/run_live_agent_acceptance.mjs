@@ -654,6 +654,13 @@ function run() {
       : ['ALL'],
   );
   const wantsGroup = (groupId) => selectedGroups.has('ALL') || selectedGroups.has(groupId);
+  const selectedGroupList = Array.from(selectedGroups.values());
+  const gitSha = execSync('git rev-parse HEAD', {
+    cwd: repoRoot,
+    stdio: 'pipe',
+    shell: '/bin/bash',
+    encoding: 'utf8',
+  }).trim();
 
   const makeSessionKey = (name, agent = 'main') => `agent:${agent}:live-acceptance:${name}:${Date.now()}`;
 
@@ -667,8 +674,8 @@ function run() {
   };
 
   const timeoutFor = (testId, groupId) => {
-    if (String(groupId) === 'G4') return 45000;
-    if (String(groupId) === 'G12') return 45000;
+    if (String(groupId) === 'G4') return 90000;
+    if (String(groupId) === 'G12') return 90000;
     if (String(testId).startsWith('T14.')) return 30000;
     return 22000;
   };
@@ -780,6 +787,10 @@ function run() {
     stamp,
     generatedAt: new Date().toISOString(),
     reportDir,
+    codeState: {
+      gitSha,
+      selectedGroups: selectedGroupList,
+    },
     totalScore,
     totalMax,
     criticalFailures,

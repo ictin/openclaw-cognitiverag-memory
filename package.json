@@ -21,6 +21,7 @@
     "runtime:patch:apply": "node scripts/apply_openclaw_runtime_patch.mjs",
     "runtime:patch:verify": "node scripts/verify_openclaw_runtime_patch.mjs",
     "test:live-acceptance": "node scripts/run_live_agent_acceptance.mjs",
+    "test:live-acceptance:closure": "node scripts/run_live_agent_acceptance_closure.mjs",
     "test:live-acceptance:report": "node scripts/score_live_agent_acceptance.mjs"
   },
   "repository": {

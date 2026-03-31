@@ -16,8 +16,16 @@ This battery runs the real OpenClaw gateway/agent path and scores live behavior 
 
 ```bash
 npm run test:live-acceptance
+npm run test:live-acceptance:closure
 npm run test:live-acceptance:report
 ```
+
+`test:live-acceptance:closure` performs:
+- one monolithic full-battery attempt
+- automatic fallback to grouped resumable closure batches when gateway churn blocks monolithic completion
+- final aggregated closure artifacts:
+  - `final_live_acceptance_results.json`
+  - `final_live_acceptance_report.md`
 
 ## Artifacts
 
