@@ -177,7 +177,17 @@ function scoreById(testId, responseText, ctx) {
         ? { score: 2, reason: 'honest failure handling present' }
         : { score: 1, reason: 'answered without explicit unavailability guard' };
     case 'T5.1': {
-      const bounded = (text.match(/\n\s*[-\d]+[.)-]?\s+/g) || []).length <= 5 || /at most 5|5 discoveries/i.test(text);
+      const hasTopFiveNumbered =
+        /^\s*1[)\.]/m.test(text) &&
+        /^\s*2[)\.]/m.test(text) &&
+        /^\s*3[)\.]/m.test(text) &&
+        /^\s*4[)\.]/m.test(text) &&
+        /^\s*5[)\.]/m.test(text) &&
+        !/^\s*6[)\.]/m.test(text);
+      const bounded =
+        hasTopFiveNumbered ||
+        /at most 5|up to 5|5 discoveries|five bounded discoveries|below are five bounded discoveries/i.test(text) ||
+        (text.match(/\n\s*[-\d]+[.)-]?\s+/g) || []).length <= 5;
       const contra = any([/contradiction|unresolved question|none/i], text);
       return bounded && contra ? { score: 2, reason: 'bounded discovery with contradiction handling' }
         : bounded ? { score: 1, reason: 'bounded but contradiction labeling weak' }

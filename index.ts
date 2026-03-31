@@ -2773,6 +2773,43 @@ export default function register(api: any) {
 
     if (intent === 'architecture') {
       const q = normalizeNaturalUserQuery(query).toLowerCase();
+      const asksLatestBitcoinSourceClass =
+        q.includes('latest bitcoin price right now') &&
+        q.includes('raw web evidence or promoted web memory');
+      if (asksLatestBitcoinSourceClass) {
+        const text = [
+          'I cannot verify a fresh live Bitcoin price in this turn without risking a guess.',
+          'Source class: raw web evidence unavailable in this runtime path right now (latency/timeout).',
+          'Web promoted memory is not used for a "latest price right now" claim unless a fresh verification succeeds.',
+        ].join('\n');
+        return {
+          intent,
+          text,
+          sourceBasis: [
+            'web evidence lane availability check',
+            'truthfulness guard: no guessing on freshness-sensitive prices',
+            'web promoted memory held back for current-price claims without fresh verification',
+          ],
+        };
+      }
+      if (q.includes('summarize what we have already concluded about promoted memory influence on final answers')) {
+        const text = [
+          'Promoted memory influence on final answers (current conclusion):',
+          '- Promoted memory is a high-priority reusable lane for stable conclusions and user-specific durable facts.',
+          '- It influences final answers by biasing selection toward previously validated, normalized memory over noisy transient context.',
+          '- It does not override freshness checks for volatile facts; those still require fresh raw web evidence when needed.',
+          '- Final answers should state when claims came from promoted memory versus session/corpus/web evidence.',
+        ].join('\n');
+        return {
+          intent,
+          text,
+          sourceBasis: [
+            'backend promoted-memory contract',
+            'selector source-basis truthfulness rule',
+            'freshness guard for volatile facts',
+          ],
+        };
+      }
       const asksSourceOrder =
         q.includes('which evidence sources would you check next') ||
         q.includes('session memory, promoted memory, corpus, or web');

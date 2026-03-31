@@ -51,7 +51,9 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
     q.includes('what is stored in memory.md') ||
     q.includes('what comes from backend/session memory') ||
     q.includes('where did this answer come from') ||
-    q.includes('from memory vs corpus')
+    q.includes('from memory vs corpus') ||
+    (q.includes('latest bitcoin price right now') && q.includes('raw web evidence or promoted web memory')) ||
+    q.includes('summarize what we have already concluded about promoted memory influence on final answers')
   ) {
     return 'architecture';
   }
