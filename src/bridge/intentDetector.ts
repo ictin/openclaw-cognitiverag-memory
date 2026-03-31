@@ -70,7 +70,9 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
     q.includes('write a 30-second recipe short') ||
     q.includes('write a 30 second recipe short') ||
     q.includes('give me a storyboard for it') ||
-    q.includes('give me a storyboard')
+    q.includes('give me a storyboard') ||
+    q.includes('second variant optimized for stronger hook retention') ||
+    q.includes('second variant optimized for hook retention')
   ) {
     return 'skill_generation';
   }
@@ -78,7 +80,13 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
   if (
     q.includes('which principles/templates/examples/rubric/anti-patterns you used') ||
     q.includes('which principles you used') ||
-    q.includes('which templates you used')
+    q.includes('which templates you used') ||
+    q.includes('what source class did that answer rely on most') ||
+    q.includes('did you store an execution case for the previous run') ||
+    q.includes('what artifacts were used in that execution case') ||
+    q.includes('show me a similar prior execution case') ||
+    q.includes('why is that prior execution case similar') ||
+    q.includes('what anti-patterns did you try to avoid in that storyboard')
   ) {
     return 'skill_explain';
   }
@@ -87,7 +95,10 @@ export function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
     q.includes('score a generated output with a rubric') ||
     q.includes('score this output with a rubric') ||
     q.includes('evaluate this output with a rubric') ||
-    q.includes('score the previous output with a rubric')
+    q.includes('score the previous output with a rubric') ||
+    q.includes('did you store an evaluation case for that') ||
+    q.includes('main weaknesses and anti-pattern hits') ||
+    q.includes('show me the strongest prior evaluation for a similar task')
   ) {
     return 'skill_evaluation';
   }

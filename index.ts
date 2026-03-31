@@ -10,7 +10,10 @@ import {
   type NaturalAnswerIntent as BridgeNaturalAnswerIntent,
 } from './src/bridge/intentDetector.js';
 import {
+  fetchEvaluations,
   fetchBackendAssembleContext,
+  fetchExecutionCase,
+  fetchExecutionSimilar,
   fetchSkillPackBuild,
   writeEvaluationCase,
   writeExecutionCase,
@@ -946,6 +949,15 @@ export default function register(api: any) {
     outputText: string;
     selectedArtifactIds: string[];
     groupedArtifacts: Record<string, any[]>;
+  } | null = null;
+  let lastSkillEvaluation: {
+    evaluationCaseId: string;
+    executionCaseId: string;
+    passFlag: boolean;
+    antiPatternHits: string[];
+    weaknesses: string[];
+    strengths: string[];
+    improvementNotes: string[];
   } | null = null;
 
   try {
@@ -2388,6 +2400,94 @@ export default function register(api: any) {
           sourceBasis: ['no_recent_skill_run'],
         };
       }
+      const qLower = query.toLowerCase();
+      if (qLower.includes('source class did that answer rely on most')) {
+        return {
+          intent,
+          text:
+            lastSkillRun.selectedArtifactIds.length > 0
+              ? 'Source class: skill memory pack (typed artifacts). Secondary support may include corpus or general model knowledge only when pack coverage is thin.'
+              : 'Source class: skill memory pack (thin coverage, 0 selected artifacts). Output was generated with adapter fallback structure and should be treated as low-confidence skill grounding.',
+          sourceBasis: [
+            `execution_memory:${lastSkillRun.executionCaseId}`,
+            lastSkillRun.selectedArtifactIds.length ? 'skill_artifacts:present' : 'skill_artifacts:none',
+          ],
+        };
+      }
+      if (qLower.includes('store an execution case for the previous run')) {
+        const verify = await fetchExecutionCase(COG_RAG_BASE, lastSkillRun.executionCaseId).catch(() => ({ status: 0, body: {} }));
+        const ok = Number(verify?.status ?? 0) >= 200 && Number(verify?.status ?? 0) < 300;
+        return {
+          intent,
+          text: ok
+            ? `Yes. Execution case stored: ${lastSkillRun.executionCaseId}.`
+            : `Execution case write for the previous run is not currently verifiable via backend read path. Last known id: ${lastSkillRun.executionCaseId}.`,
+          sourceBasis: [`execution_memory:${lastSkillRun.executionCaseId}`],
+        };
+      }
+      if (qLower.includes('artifacts were used in that execution case')) {
+        const lines = [
+          `Execution case ${lastSkillRun.executionCaseId} used ${lastSkillRun.selectedArtifactIds.length} selected artifacts.`,
+        ];
+        if (lastSkillRun.selectedArtifactIds.length) {
+          for (const id of lastSkillRun.selectedArtifactIds.slice(0, 8)) lines.push(`- ${id}`);
+        } else {
+          lines.push('- none selected (thin skill-pack coverage)');
+        }
+        return {
+          intent,
+          text: lines.join('\n'),
+          sourceBasis: [
+            `execution_memory:${lastSkillRun.executionCaseId}`,
+            lastSkillRun.selectedArtifactIds.length ? `skill_artifacts:${lastSkillRun.selectedArtifactIds.length}` : 'skill_artifacts:none',
+          ],
+        };
+      }
+      if (qLower.includes('similar prior execution case') || qLower.includes('why is that prior execution case similar')) {
+        const similar = await fetchExecutionSimilar(COG_RAG_BASE, {
+          query: lastSkillRun.query || query,
+          agentType: lastSkillRun.agentType,
+          taskType: lastSkillRun.taskType,
+          channelType: lastSkillRun.channelType,
+          language: lastSkillRun.language,
+          limit: 3,
+        }).catch(() => ({ status: 0, body: {} }));
+        const items = Array.isArray(similar?.body?.items) ? similar.body.items : [];
+        const top = items[0];
+        const topCaseId = String(top?.case?.execution_case_id ?? '').trim();
+        if (!topCaseId) {
+          return {
+            intent,
+            text: 'No similar prior execution case is currently available.',
+            sourceBasis: ['execution_similarity:none'],
+          };
+        }
+        const reasons = Array.isArray(top?.reasons) ? top.reasons.map((r: unknown) => String(r)) : [];
+        return {
+          intent,
+          text: [
+            `Similar prior execution case: ${topCaseId}.`,
+            reasons.length ? `Similarity reasons: ${reasons.join(', ')}.` : 'Similarity reasons: backend similarity heuristic.',
+          ].join('\n'),
+          sourceBasis: [
+            `execution_memory:${lastSkillRun.executionCaseId}`,
+            `execution_similarity:${topCaseId}`,
+          ],
+        };
+      }
+      if (qLower.includes('anti-patterns did you try to avoid in that storyboard')) {
+        const anti = Array.isArray(lastSkillEvaluation?.antiPatternHits) ? lastSkillEvaluation?.antiPatternHits ?? [] : [];
+        return {
+          intent,
+          text: anti.length
+            ? `Explicit anti-pattern hits in latest evaluation: ${anti.join(', ')}.`
+            : 'No explicit anti-pattern hits were recorded for the latest storyboard evaluation.',
+          sourceBasis: [
+            `execution_memory:${lastSkillRun.executionCaseId}`,
+            lastSkillEvaluation?.evaluationCaseId ? `evaluation_memory:${lastSkillEvaluation.evaluationCaseId}` : 'evaluation_memory:none',
+          ],
+        };
+      }
       const groups = lastSkillRun.groupedArtifacts;
       const lines = [
         `Skill-memory usage for execution case ${lastSkillRun.executionCaseId}:`,
@@ -2419,6 +2519,64 @@ export default function register(api: any) {
           sourceBasis: ['no_recent_skill_run_for_evaluation'],
         };
       }
+      const qLower = query.toLowerCase();
+      if (qLower.includes('did you store an evaluation case for that')) {
+        if (lastSkillEvaluation?.evaluationCaseId) {
+          return {
+            intent,
+            text: `Yes. Evaluation case stored: ${lastSkillEvaluation.evaluationCaseId}.`,
+            sourceBasis: [`evaluation_memory:${lastSkillEvaluation.evaluationCaseId}`],
+          };
+        }
+        const pull = await fetchEvaluations(COG_RAG_BASE, {
+          executionCaseId: lastSkillRun.executionCaseId,
+          limit: 1,
+        }).catch(() => ({ status: 0, body: {} }));
+        const item = Array.isArray(pull?.body?.items) ? pull.body.items[0] : null;
+        const eid = String(item?.case?.evaluation_case_id ?? '').trim();
+        return {
+          intent,
+          text: eid ? `Yes. Evaluation case stored: ${eid}.` : 'No evaluation case is currently available for that run.',
+          sourceBasis: [eid ? `evaluation_memory:${eid}` : 'evaluation_memory:none'],
+        };
+      }
+      if (qLower.includes('main weaknesses and anti-pattern hits')) {
+        if (lastSkillEvaluation) {
+          return {
+            intent,
+            text: [
+              `Main weaknesses: ${lastSkillEvaluation.weaknesses.length ? lastSkillEvaluation.weaknesses.join(', ') : 'none recorded'}.`,
+              `Anti-pattern hits: ${lastSkillEvaluation.antiPatternHits.length ? lastSkillEvaluation.antiPatternHits.join(', ') : 'none'}.`,
+            ].join('\n'),
+            sourceBasis: [`evaluation_memory:${lastSkillEvaluation.evaluationCaseId}`],
+          };
+        }
+      }
+      if (qLower.includes('strongest prior evaluation for a similar task')) {
+        const similarEval = await fetchEvaluations(COG_RAG_BASE, {
+          agentType: lastSkillRun.agentType,
+          taskType: lastSkillRun.taskType,
+          channelType: lastSkillRun.channelType,
+          language: lastSkillRun.language,
+          passFlag: true,
+          limit: 3,
+        }).catch(() => ({ status: 0, body: {} }));
+        const items = Array.isArray(similarEval?.body?.items) ? similarEval.body.items : [];
+        const top = items[0]?.case ?? null;
+        const eid = String(top?.evaluation_case_id ?? '').trim();
+        if (!eid) {
+          return {
+            intent,
+            text: 'No strong prior evaluation is currently available for a similar task.',
+            sourceBasis: ['evaluation_memory:none'],
+          };
+        }
+        return {
+          intent,
+          text: `Strongest prior similar evaluation: ${eid} (overall=${Number(top?.overall_score ?? 0).toFixed(2)}, pass=${top?.pass_flag ? 'yes' : 'no'}).`,
+          sourceBasis: [`evaluation_memory:${eid}`],
+        };
+      }
       const out = lastSkillRun.outputText.toLowerCase();
       const criteria = [
         { criterionId: 'hook_clarity', label: 'Hook clarity', score: out.includes('hook') ? 4 : 2, maxScore: 5, weight: 1 },
@@ -2445,6 +2603,17 @@ export default function register(api: any) {
         improvementNotes: passFlag ? ['keep structure; test alternate hooks'] : ['tighten first line', 'clarify payoff'],
       }).catch(() => ({ status: 0, body: {} }));
       const evaluationCaseId = String(evalWrite?.body?.evaluation_case_id ?? '').trim();
+      if (evaluationCaseId) {
+        lastSkillEvaluation = {
+          evaluationCaseId,
+          executionCaseId: lastSkillRun.executionCaseId,
+          passFlag,
+          antiPatternHits: antiHits,
+          weaknesses: passFlag ? [] : ['needs stronger opening and payoff'],
+          strengths: passFlag ? ['clear structure', 'usable pacing'] : ['partial structure'],
+          improvementNotes: passFlag ? ['keep structure; test alternate hooks'] : ['tighten first line', 'clarify payoff'],
+        };
+      }
       const lines = [
         `Rubric evaluation for execution ${lastSkillRun.executionCaseId}:`,
         ...criteria.map((c) => `- ${c.label}: ${c.score}/${c.maxScore}`),

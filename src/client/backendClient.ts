@@ -67,6 +67,30 @@ export type EvaluationCaseWriteRequest = {
   improvementNotes?: string[];
 };
 
+export type ExecutionCaseResponse = {
+  status: number;
+  body: any;
+};
+
+export type ExecutionSimilarRequest = {
+  query: string;
+  agentType?: string;
+  taskType?: string;
+  channelType?: string;
+  language?: string;
+  limit?: number;
+};
+
+export type EvaluationsQuery = {
+  executionCaseId?: string;
+  agentType?: string;
+  taskType?: string;
+  channelType?: string;
+  language?: string;
+  passFlag?: boolean;
+  limit?: number;
+};
+
 export async function fetchBackendAssembleContext(
   baseUrl: string,
   request: BackendAssembleRequest,
@@ -166,6 +190,40 @@ export async function writeEvaluationCase(baseUrl: string, request: EvaluationCa
       improvement_notes: request.improvementNotes ?? [],
     }),
   });
+  const body = await res.json().catch(() => ({}));
+  return { status: Number(res.status ?? 0), body };
+}
+
+export async function fetchExecutionCase(baseUrl: string, executionCaseId: string): Promise<ExecutionCaseResponse> {
+  const id = encodeURIComponent(String(executionCaseId ?? '').trim());
+  const res = await fetch(`${baseUrl}/skill_memory/execution_case/${id}`, { method: 'GET' });
+  const body = await res.json().catch(() => ({}));
+  return { status: Number(res.status ?? 0), body };
+}
+
+export async function fetchExecutionSimilar(baseUrl: string, request: ExecutionSimilarRequest): Promise<{ status: number; body: any }> {
+  const params = new URLSearchParams();
+  params.set('query', String(request.query ?? '').trim());
+  if (request.agentType) params.set('agent_type', String(request.agentType));
+  if (request.taskType) params.set('task_type', String(request.taskType));
+  if (request.channelType) params.set('channel_type', String(request.channelType));
+  if (request.language) params.set('language', String(request.language));
+  params.set('limit', String(Math.max(1, Math.min(20, Number(request.limit ?? 6)))));
+  const res = await fetch(`${baseUrl}/skill_memory/execution_similar?${params.toString()}`, { method: 'GET' });
+  const body = await res.json().catch(() => ({}));
+  return { status: Number(res.status ?? 0), body };
+}
+
+export async function fetchEvaluations(baseUrl: string, request: EvaluationsQuery): Promise<{ status: number; body: any }> {
+  const params = new URLSearchParams();
+  if (request.executionCaseId) params.set('execution_case_id', String(request.executionCaseId));
+  if (request.agentType) params.set('agent_type', String(request.agentType));
+  if (request.taskType) params.set('task_type', String(request.taskType));
+  if (request.channelType) params.set('channel_type', String(request.channelType));
+  if (request.language) params.set('language', String(request.language));
+  if (typeof request.passFlag === 'boolean') params.set('pass_flag', request.passFlag ? 'true' : 'false');
+  params.set('limit', String(Math.max(1, Math.min(20, Number(request.limit ?? 6)))));
+  const res = await fetch(`${baseUrl}/skill_memory/evaluations?${params.toString()}`, { method: 'GET' });
   const body = await res.json().catch(() => ({}));
   return { status: Number(res.status ?? 0), body };
 }
