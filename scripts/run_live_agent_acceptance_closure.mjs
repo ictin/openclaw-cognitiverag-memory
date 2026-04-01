@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 const REPO_ROOT = '/home/ictin_claw/.openclaw/workspace/openclaw-cognitiverag-memory';
@@ -12,6 +13,8 @@ const GROUP_BATCHES = [
   ['G10', 'G11', 'G12'],
   ['G13', 'G14', 'G15'],
 ];
+const RUNTIME_ENTRY_PATH = '/home/ictin_claw/.openclaw/workspace/.openclaw/extensions/cognitiverag-memory/index.ts';
+const RUNTIME_PLUGIN_ROOT = '/home/ictin_claw/.openclaw/workspace/.openclaw/extensions/cognitiverag-memory';
 const SKIP_MONOLITHIC = /^(1|true|yes)$/i.test(String(process.env.LIVE_ACCEPTANCE_SKIP_MONOLITHIC || '0'));
 const MONOLITHIC_TIMEOUT_SEC = Math.max(60, Number(process.env.LIVE_ACCEPTANCE_MONOLITHIC_TIMEOUT_SEC || (12 * 60)));
 const GROUP_TIMEOUT_SEC = Math.max(60, Number(process.env.LIVE_ACCEPTANCE_GROUP_TIMEOUT_SEC || (16 * 60)));
@@ -67,6 +70,44 @@ function parseRunJson(stdout) {
 
 function loadJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function sha256File(filePath) {
+  try {
+    const data = fs.readFileSync(filePath);
+    return createHash('sha256').update(data).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function buildRuntimeProofFallback(gitSha) {
+  const repoIndexPath = path.join(REPO_ROOT, 'index.ts');
+  const repoIntentPath = path.join(REPO_ROOT, 'src', 'bridge', 'intentDetector.ts');
+  const runtimeIntentPath = path.join(RUNTIME_PLUGIN_ROOT, 'src', 'bridge', 'intentDetector.ts');
+  const runtimeIndexHash = sha256File(RUNTIME_ENTRY_PATH);
+  const runtimeIntentHash = sha256File(runtimeIntentPath);
+  const repoIndexHash = sha256File(repoIndexPath);
+  const repoIntentHash = sha256File(repoIntentPath);
+  const runtimeCodeMatchesRepo =
+    !!runtimeIndexHash &&
+    !!runtimeIntentHash &&
+    !!repoIndexHash &&
+    !!repoIntentHash &&
+    runtimeIndexHash === repoIndexHash &&
+    runtimeIntentHash === repoIntentHash;
+  return {
+    runtimeEntryPath: RUNTIME_ENTRY_PATH,
+    runtimePluginRoot: RUNTIME_PLUGIN_ROOT,
+    repoGitSha: gitSha,
+    runtimeCodeMatchesRepo,
+    runtimeCommitSha: runtimeCodeMatchesRepo ? gitSha : null,
+    runtimeIndexHash,
+    runtimeIntentHash,
+    repoIndexHash,
+    repoIntentHash,
+    extractedFrom: 'closure-fallback',
+  };
 }
 
 function groupBy(arr, keyFn) {
@@ -261,10 +302,11 @@ function main() {
   const totalMax = aggregatedTests.length * 2;
   const modelRoutesUsed = Array.from(new Set(aggregatedTests.map((t) => String(t.modelRoute || 'weak/default')))).sort();
   const groupsRun = groups.map((g) => g.id);
-  const runtimeProof =
+  const runtimeProofFromRuns =
     runtimeProofCandidates.find((p) => p?.runtimeCodeMatchesRepo) ||
     runtimeProofCandidates[0] ||
     null;
+  const runtimeProof = runtimeProofFromRuns || buildRuntimeProofFallback(gitSha);
 
   const finalSummary = {
     schemaVersion: 'live_acceptance_closure.v2',
