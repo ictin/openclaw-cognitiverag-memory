@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 function nowStamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
@@ -72,6 +73,25 @@ function updateIdsFromText(ctx, text) {
   }
   if (ctx.executionIds.length) ctx.lastExecutionId = ctx.executionIds[ctx.executionIds.length - 1];
   if (ctx.evaluationIds.length) ctx.lastEvaluationId = ctx.evaluationIds[ctx.evaluationIds.length - 1];
+}
+
+function sha256File(filePath) {
+  try {
+    const data = fs.readFileSync(filePath);
+    return createHash('sha256').update(data).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function extractRuntimeProofFromText(text) {
+  const raw = String(text || '');
+  const entryMatch = raw.match(/runtime entry path:\s*(.+)/i);
+  const rootMatch = raw.match(/runtime plugin root:\s*(.+)/i);
+  return {
+    runtimeEntryPath: entryMatch?.[1]?.trim() || null,
+    runtimePluginRoot: rootMatch?.[1]?.trim() || null,
+  };
 }
 
 function scoreById(testId, responseText, ctx) {
@@ -291,11 +311,40 @@ function scoreById(testId, responseText, ctx) {
         ? { score: 2, reason: 'uncertainty surfaced honestly' }
         : { score: 1, reason: 'uncertainty answer weak' };
     case 'T13.1':
+      return any([/remembered evidence|stored remembered evidence|I do not currently have stored remembered evidence/i], text)
+        ? { score: 2, reason: 'weak-model remember routing is memory-aware' }
+        : { score: 0, reason: 'weak-model remember routing degraded' };
     case 'T13.2':
-    case 'T13.3':
-      return any([/remembered evidence|stored remembered evidence|skill-memory guided|principle|template|rubric/i], text)
-        ? { score: 1, reason: 'cross-model behavior acceptable' }
-        : { score: 0, reason: 'cross-model routing weak' };
+      return any([/general knowledge|not from stored memory/i], text)
+        ? { score: 2, reason: 'weak-model know routing is labeled correctly' }
+        : { score: 0, reason: 'weak-model know routing mislabeled' };
+    case 'T13.3': {
+      const hasTopFiveNumbered =
+        /^\s*1[)\.]/m.test(text) &&
+        /^\s*2[)\.]/m.test(text) &&
+        /^\s*3[)\.]/m.test(text) &&
+        /^\s*4[)\.]/m.test(text) &&
+        /^\s*5[)\.]/m.test(text) &&
+        !/^\s*6[)\.]/m.test(text);
+      const bounded =
+        hasTopFiveNumbered ||
+        /at most 5|up to 5|5 discoveries|five bounded discoveries|below are five bounded discoveries/i.test(text) ||
+        (text.match(/\n\s*[-\d]+[.)-]?\s+/g) || []).length <= 5;
+      const contra = any([/contradiction|unresolved question|none/i], text);
+      return bounded && contra
+        ? { score: 2, reason: 'weak-model discovery remains bounded' }
+        : bounded
+          ? { score: 1, reason: 'weak-model discovery partly bounded' }
+          : { score: 0, reason: 'weak-model discovery unbounded' };
+    }
+    case 'T13.4':
+      return any([/30-second recipe short script|skill-memory guided/i], text)
+        ? { score: 2, reason: 'weak-model skill generation remains routed' }
+        : { score: 0, reason: 'weak-model skill generation degraded' };
+    case 'T13.5':
+      return any([/principle|template|example|rubric|anti-pattern|workflow/i], text)
+        ? { score: 2, reason: 'weak-model skill explanation remains routed' }
+        : { score: 0, reason: 'weak-model skill explanation degraded' };
     case 'T14.1':
       return any([/CognitiveRAG Status/i, /backend ownership:\s*canonical/i], text)
         ? { score: 2, reason: 'restart status persisted' }
@@ -534,10 +583,19 @@ function renderMarkdown(summary) {
   const lines = [];
   lines.push('# Live OpenClaw Agent Acceptance Report');
   lines.push('');
+  lines.push(`- schema version: ${summary.schemaVersion}`);
   lines.push(`- stamp: ${summary.stamp}`);
+  lines.push(`- verdict: ${summary.finalVerdict}`);
   lines.push(`- overall score: ${summary.totalScore}/${summary.totalMax}`);
   lines.push(`- critical hard fails: ${summary.criticalFailures.length}`);
   lines.push(`- critical ids: ${summary.criticalFailures.map((f) => f.id).join(', ') || 'none'}`);
+  lines.push(`- groups run: ${(summary.groupsRun || []).join(', ') || 'none'}`);
+  lines.push(`- model routes used: ${(summary.modelRoutesUsed || []).join(', ') || 'none'}`);
+  lines.push(`- git sha: ${summary.codeState?.gitSha || 'unknown'}`);
+  lines.push(`- runtime commit sha: ${summary.runtimeProof?.runtimeCommitSha || 'unknown'}`);
+  lines.push(`- runtime entry path: ${summary.runtimeProof?.runtimeEntryPath || 'unknown'}`);
+  lines.push(`- runtime plugin root: ${summary.runtimeProof?.runtimePluginRoot || 'unknown'}`);
+  lines.push(`- runtime code matches repo: ${summary.runtimeProof?.runtimeCodeMatchesRepo ? 'yes' : 'no'}`);
   lines.push('');
   lines.push('## Group Summary');
   lines.push('');
@@ -709,6 +767,7 @@ function run() {
         reason: result.timedOut ? `${scoreObj.reason}; timeout` : scoreObj.reason,
         critical: CRITICAL.has(test.id),
         timedOut: !!result.timedOut,
+        modelRoute: 'weak/default',
       });
     }
   }
@@ -716,8 +775,10 @@ function run() {
   // Group 13 (cross-model robustness)
   const crossPrompts = [
     { id: 'T13.1', prompt: 'What do you remember about NLP hypnosis?' },
-    { id: 'T13.2', prompt: 'Write a 30-second recipe short about leftover chicken.' },
-    { id: 'T13.3', prompt: 'Now explain which principles/templates/examples/rubric/anti-patterns you used.' },
+    { id: 'T13.2', prompt: 'What do you know about NLP?' },
+    { id: 'T13.3', prompt: 'I am working on CognitiveRAG/OpenClaw memory. What else matters here that I am not asking about? Keep it bounded. Give me at most 5 discoveries and label contradictions or unresolved questions explicitly.' },
+    { id: 'T13.4', prompt: 'Write a 30-second recipe short about leftover chicken.' },
+    { id: 'T13.5', prompt: 'Now explain which principles/templates/examples/rubric/anti-patterns you used.' },
   ];
   if (wantsGroup('G13')) {
     const weakKey = getOrCreate('cross_model_weak', 'main');
@@ -726,7 +787,7 @@ function run() {
       callIdx += 3;
       updateIdsFromText(ctx, r.text);
       const s = scoreById(test.id, r.text, ctx);
-      tests.push({ id: test.id, group: 'G13', groupTitle: 'cross-model robustness', prompt: `${test.prompt} [weak/default]`, response: r.text, score: s.score, reason: s.reason, critical: false, timedOut: !!r.timedOut });
+      tests.push({ id: test.id, group: 'G13', groupTitle: 'cross-model robustness', prompt: `${test.prompt} [weak/default]`, response: r.text, score: s.score, reason: s.reason, critical: false, timedOut: !!r.timedOut, modelRoute: 'weak/default' });
     }
 
     try {
@@ -736,7 +797,7 @@ function run() {
         callIdx += 3;
         updateIdsFromText(ctx, r.text);
         const s = scoreById(test.id, r.text, ctx);
-        tests.push({ id: `${test.id}.strong`, group: 'G13', groupTitle: 'cross-model robustness', prompt: `${test.prompt} [strong/codex]`, response: r.text, score: s.score, reason: s.reason, critical: false, timedOut: !!r.timedOut });
+        tests.push({ id: `${test.id}.strong`, group: 'G13', groupTitle: 'cross-model robustness', prompt: `${test.prompt} [strong/codex]`, response: r.text, score: s.score, reason: s.reason, critical: false, timedOut: !!r.timedOut, modelRoute: 'strong/codex' });
       }
     } catch (e) {
       for (const test of crossPrompts) {
@@ -750,6 +811,7 @@ function run() {
           reason: 'strong model route unavailable; recorded as partial',
           critical: false,
           timedOut: false,
+          modelRoute: 'strong/codex',
         });
       }
     }
@@ -771,14 +833,15 @@ function run() {
       callIdx += 3;
       updateIdsFromText(ctx, r.text);
       const s = scoreById(test.id, r.text, ctx);
-      tests.push({ id: test.id, group: 'G14', groupTitle: 'restart persistence', prompt: test.prompt, response: r.text, score: s.score, reason: s.reason, critical: CRITICAL.has(test.id), timedOut: !!r.timedOut });
+      tests.push({ id: test.id, group: 'G14', groupTitle: 'restart persistence', prompt: test.prompt, response: r.text, score: s.score, reason: s.reason, critical: CRITICAL.has(test.id), timedOut: !!r.timedOut, modelRoute: 'weak/default' });
     }
   }
 
   // Group 15 optional direct persistence checks
   if (wantsGroup('G15')) tests.push(...runDirectPersistenceChecks(ctx, reportDir));
 
-  const groupMap = groupBy(tests, (t) => t.group);
+  const testsNormalized = tests.map((t) => ({ ...t, modelRoute: t.modelRoute || 'weak/default' }));
+  const groupMap = groupBy(testsNormalized, (t) => t.group);
   const groups = Array.from(groupMap.entries())
     .map(([groupId, arr]) => {
       const title = String(arr[0]?.groupTitle ?? groupId);
@@ -789,11 +852,33 @@ function run() {
     })
     .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
 
-  const criticalFailures = tests.filter((t) => t.critical && Number(t.score) === 0).map((t) => ({ id: t.id, reason: t.reason }));
-  const totalScore = tests.reduce((n, t) => n + Number(t.score || 0), 0);
-  const totalMax = tests.length * 2;
+  const criticalFailures = testsNormalized.filter((t) => t.critical && Number(t.score) === 0).map((t) => ({ id: t.id, reason: t.reason }));
+  const totalScore = testsNormalized.reduce((n, t) => n + Number(t.score || 0), 0);
+  const totalMax = testsNormalized.length * 2;
+
+  const t01 = testsNormalized.find((t) => t.id === 'T0.1');
+  const runtimeFromText = extractRuntimeProofFromText(String(t01?.response || ''));
+  const runtimeEntryPath = runtimeFromText.runtimeEntryPath || '/home/ictin_claw/.openclaw/workspace/.openclaw/extensions/cognitiverag-memory/index.ts';
+  const runtimePluginRoot = runtimeFromText.runtimePluginRoot || '/home/ictin_claw/.openclaw/workspace/.openclaw/extensions/cognitiverag-memory';
+  const repoIndexPath = path.join(repoRoot, 'index.ts');
+  const repoIntentPath = path.join(repoRoot, 'src', 'bridge', 'intentDetector.ts');
+  const runtimeIndexHash = sha256File(runtimeEntryPath);
+  const runtimeIntentHash = sha256File(path.join(runtimePluginRoot, 'src', 'bridge', 'intentDetector.ts'));
+  const repoIndexHash = sha256File(repoIndexPath);
+  const repoIntentHash = sha256File(repoIntentPath);
+  const runtimeCodeMatchesRepo =
+    !!runtimeIndexHash &&
+    !!runtimeIntentHash &&
+    !!repoIndexHash &&
+    !!repoIntentHash &&
+    runtimeIndexHash === repoIndexHash &&
+    runtimeIntentHash === repoIntentHash;
+
+  const modelRoutesUsed = Array.from(new Set(testsNormalized.map((t) => String(t.modelRoute || 'weak/default')))).sort();
+  const groupsRun = groups.map((g) => g.id);
 
   const summary = {
+    schemaVersion: 'live_acceptance.v2',
     stamp,
     generatedAt: new Date().toISOString(),
     reportDir,
@@ -804,6 +889,21 @@ function run() {
     totalScore,
     totalMax,
     criticalFailures,
+    finalVerdict: criticalFailures.length ? 'NOT READY' : 'READY',
+    groupsRun,
+    modelRoutesUsed,
+    runtimeProof: {
+      runtimeEntryPath,
+      runtimePluginRoot,
+      repoGitSha: gitSha,
+      runtimeCodeMatchesRepo,
+      runtimeCommitSha: runtimeCodeMatchesRepo ? gitSha : null,
+      runtimeIndexHash,
+      runtimeIntentHash,
+      repoIndexHash,
+      repoIntentHash,
+      extractedFrom: t01 ? 'T0.1' : 'fallback-default-path',
+    },
     contextIds: {
       executionIds: ctx.executionIds,
       evaluationIds: ctx.evaluationIds,
@@ -811,7 +911,7 @@ function run() {
       lastEvaluationId: ctx.lastEvaluationId,
     },
     groups,
-    tests,
+    tests: testsNormalized,
   };
 
   fs.writeFileSync(path.join(reportDir, 'live_acceptance_results.json'), JSON.stringify(summary, null, 2));

@@ -12,6 +12,9 @@ const GROUP_BATCHES = [
   ['G10', 'G11', 'G12'],
   ['G13', 'G14', 'G15'],
 ];
+const SKIP_MONOLITHIC = /^(1|true|yes)$/i.test(String(process.env.LIVE_ACCEPTANCE_SKIP_MONOLITHIC || '0'));
+const MONOLITHIC_TIMEOUT_SEC = Math.max(60, Number(process.env.LIVE_ACCEPTANCE_MONOLITHIC_TIMEOUT_SEC || (12 * 60)));
+const GROUP_TIMEOUT_SEC = Math.max(60, Number(process.env.LIVE_ACCEPTANCE_GROUP_TIMEOUT_SEC || (16 * 60)));
 
 function nowStamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
@@ -80,6 +83,7 @@ function renderFinalMarkdown(summary) {
   const lines = [];
   lines.push('# Final Live Acceptance Closure Report');
   lines.push('');
+  lines.push(`- schema version: ${summary.schemaVersion}`);
   lines.push(`- stamp: ${summary.stamp}`);
   lines.push(`- closure mode: ${summary.closureMode}`);
   lines.push(`- monolithic attempted: ${summary.monolithicAttempted ? 'yes' : 'no'}`);
@@ -87,6 +91,13 @@ function renderFinalMarkdown(summary) {
   lines.push(`- total score: ${summary.totalScore}/${summary.totalMax}`);
   lines.push(`- critical hard fails: ${summary.criticalFailures.length}`);
   lines.push(`- git sha: ${summary.codeState?.gitSha || 'unknown'}`);
+  lines.push(`- runtime commit sha: ${summary.runtimeProof?.runtimeCommitSha || 'unknown'}`);
+  lines.push(`- runtime entry path: ${summary.runtimeProof?.runtimeEntryPath || 'unknown'}`);
+  lines.push(`- runtime plugin root: ${summary.runtimeProof?.runtimePluginRoot || 'unknown'}`);
+  lines.push(`- runtime code matches repo: ${summary.runtimeProof?.runtimeCodeMatchesRepo ? 'yes' : 'no'}`);
+  lines.push(`- groups run: ${(summary.groupsRun || []).join(', ') || 'none'}`);
+  lines.push(`- model routes used: ${(summary.modelRoutesUsed || []).join(', ') || 'none'}`);
+  lines.push(`- final verdict: ${summary.finalVerdict}`);
   lines.push('');
   lines.push('## Group Runs');
   lines.push('');
@@ -139,24 +150,27 @@ function main() {
     reportDir: '',
   };
 
-  // Step A: monolithic attempt
-  try {
-    monolithic.attempted = true;
-    const monoStamp = `${nowStamp()}-live-acceptance-monolithic-closure`;
-    const monoRun = runAcceptance(path.join(REPO_ROOT, 'scripts', 'run_live_agent_acceptance.mjs'), [monoStamp], {}, 12 * 60);
-    const parsed = parseRunJson(monoRun.stdout);
-    monolithic.stamp = parsed.stamp || monoStamp;
-    monolithic.reportDir = parsed.reportDir || path.join(REPORTS_ROOT, monolithic.stamp);
-    monolithic.succeeded = Number(parsed.criticalHardFailCount || 0) === 0;
-  } catch (error) {
-    monolithic.attempted = true;
-    monolithic.succeeded = false;
-    monolithic.error = String(error?.message || error);
+  // Step A: monolithic attempt (optional)
+  if (!SKIP_MONOLITHIC) {
+    try {
+      monolithic.attempted = true;
+      const monoStamp = `${nowStamp()}-live-acceptance-monolithic-closure`;
+      const monoRun = runAcceptance(path.join(REPO_ROOT, 'scripts', 'run_live_agent_acceptance.mjs'), [monoStamp], {}, MONOLITHIC_TIMEOUT_SEC);
+      const parsed = parseRunJson(monoRun.stdout);
+      monolithic.stamp = parsed.stamp || monoStamp;
+      monolithic.reportDir = parsed.reportDir || path.join(REPORTS_ROOT, monolithic.stamp);
+      monolithic.succeeded = Number(parsed.criticalHardFailCount || 0) === 0;
+    } catch (error) {
+      monolithic.attempted = true;
+      monolithic.succeeded = false;
+      monolithic.error = String(error?.message || error);
+    }
   }
 
   if (monolithic.succeeded) {
     const monoResults = loadJson(path.join(monolithic.reportDir, 'live_acceptance_results.json'));
     const finalSummary = {
+      schemaVersion: 'live_acceptance_closure.v2',
       stamp: closureStamp,
       generatedAt: new Date().toISOString(),
       closureMode: 'monolithic',
@@ -180,6 +194,10 @@ function main() {
       criticalFailures: monoResults.criticalFailures || [],
       groups: monoResults.groups || [],
       tests: monoResults.tests || [],
+      groupsRun: monoResults.groupsRun || (monoResults.groups || []).map((g) => g.id),
+      modelRoutesUsed: monoResults.modelRoutesUsed || [],
+      runtimeProof: monoResults.runtimeProof || null,
+      finalVerdict: (monoResults.criticalFailures || []).length ? 'NOT READY' : 'READY',
     };
     fs.writeFileSync(path.join(closureDir, 'final_live_acceptance_results.json'), JSON.stringify(finalSummary, null, 2));
     fs.writeFileSync(path.join(closureDir, 'final_live_acceptance_report.md'), renderFinalMarkdown(finalSummary));
@@ -192,13 +210,14 @@ function main() {
   // Step B: grouped resumable closure
   const groupRuns = [];
   const aggregatedTests = [];
+  const runtimeProofCandidates = [];
 
   for (let i = 0; i < GROUP_BATCHES.length; i += 1) {
     const groups = GROUP_BATCHES[i];
     const batchId = `B${i + 1}`;
     const batchStamp = `${nowStamp()}-live-acceptance-${batchId}`;
     const envExtra = { LIVE_ACCEPTANCE_GROUPS: groups.join(',') };
-    const batchRun = runAcceptance(path.join(REPO_ROOT, 'scripts', 'run_live_agent_acceptance.mjs'), [batchStamp], envExtra, 16 * 60);
+    const batchRun = runAcceptance(path.join(REPO_ROOT, 'scripts', 'run_live_agent_acceptance.mjs'), [batchStamp], envExtra, GROUP_TIMEOUT_SEC);
     const parsed = parseRunJson(batchRun.stdout);
     const reportDir = parsed.reportDir || path.join(REPORTS_ROOT, parsed.stamp || batchStamp);
     const resultJson = loadJson(path.join(reportDir, 'live_acceptance_results.json'));
@@ -216,7 +235,11 @@ function main() {
       totalScore: resultJson.totalScore,
       totalMax: resultJson.totalMax,
       criticalHardFailCount: resultJson.criticalFailures?.length || 0,
+      modelRoutesUsed: resultJson.modelRoutesUsed || [],
+      runtimeEntryPath: resultJson.runtimeProof?.runtimeEntryPath || null,
+      runtimePluginRoot: resultJson.runtimeProof?.runtimePluginRoot || null,
     });
+    if (resultJson.runtimeProof) runtimeProofCandidates.push(resultJson.runtimeProof);
 
     for (const t of resultJson.tests || []) aggregatedTests.push(t);
   }
@@ -236,8 +259,15 @@ function main() {
 
   const totalScore = aggregatedTests.reduce((n, t) => n + Number(t.score || 0), 0);
   const totalMax = aggregatedTests.length * 2;
+  const modelRoutesUsed = Array.from(new Set(aggregatedTests.map((t) => String(t.modelRoute || 'weak/default')))).sort();
+  const groupsRun = groups.map((g) => g.id);
+  const runtimeProof =
+    runtimeProofCandidates.find((p) => p?.runtimeCodeMatchesRepo) ||
+    runtimeProofCandidates[0] ||
+    null;
 
   const finalSummary = {
+    schemaVersion: 'live_acceptance_closure.v2',
     stamp: closureStamp,
     generatedAt: new Date().toISOString(),
     closureMode: 'grouped_resumable',
@@ -251,6 +281,10 @@ function main() {
     criticalFailures,
     groups,
     tests: aggregatedTests,
+    groupsRun,
+    modelRoutesUsed,
+    runtimeProof,
+    finalVerdict: criticalFailures.length ? 'NOT READY' : 'READY',
   };
 
   fs.writeFileSync(path.join(closureDir, 'final_live_acceptance_results.json'), JSON.stringify(finalSummary, null, 2));
