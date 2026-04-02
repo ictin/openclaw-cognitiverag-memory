@@ -15,6 +15,7 @@ This battery runs the real OpenClaw gateway/agent path and scores live behavior 
 ## Commands
 
 ```bash
+npm run smoke:live-memory
 npm run test:live-acceptance
 npm run test:live-acceptance:closure
 npm run test:live-acceptance:report
@@ -37,6 +38,18 @@ Each run writes to:
 Latest pointer:
 
 - `forensics/.latest_live_acceptance_report`
+
+Smoke artifacts:
+
+- `forensics/<stamp>/smoke/live_smoke_summary.json`
+- `forensics/<stamp>/smoke/benchmark_stdout.json` (unless `--benchmark-summary-file` is provided)
+
+`live_smoke_summary.json` includes runtime-proof fields:
+- `runtimeProof.runtimeEntryPath`
+- `runtimeProof.runtimePluginRoot`
+- `runtimeProof.repoGitSha`
+- `runtimeProof.runtimeCodeMatchesRepo`
+- `runtimeProof.runtimeCommitSha` (when runtime matches repo)
 
 ## Scoring
 

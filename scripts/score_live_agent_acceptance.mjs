@@ -21,9 +21,11 @@ if (!reportDir) {
   process.exit(1);
 }
 
-const jsonFile = path.join(reportDir, 'live_acceptance_results.json');
+const liveJsonFile = path.join(reportDir, 'live_acceptance_results.json');
+const closureJsonFile = path.join(reportDir, 'final_live_acceptance_results.json');
+const jsonFile = fs.existsSync(liveJsonFile) ? liveJsonFile : closureJsonFile;
 if (!fs.existsSync(jsonFile)) {
-  console.error(`Missing results file: ${jsonFile}`);
+  console.error(`Missing results file: ${liveJsonFile}`);
   process.exit(1);
 }
 
