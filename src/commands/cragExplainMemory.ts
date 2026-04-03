@@ -27,10 +27,11 @@ export function buildCragExplainMemoryText(args: {
     '- backend execution memory: stored skill-run execution cases linked to artifact usage',
     '- backend evaluation memory: rubric-scored quality cases linked to execution runs',
     '- local lossless session layer: raw + compacted session memory for recall/quote/expand',
+    '- compaction truth: compacted local/session slices keep lineage and remain recoverable',
     '- corpus layer: chunked document retrieval with provenance',
     '- large-file layer: bounded excerpt retrieval with locators',
     `- fallback mirror MEMORY.md active: ${args.fallbackMirrorActive ? 'yes' : 'no'}`,
-    '- mirrors are supporting/export layers, not canonical intelligence',
+    '- mirrors are supporting/export/debug layers, not canonical intelligence',
   ];
 
   if (args.explanation.ok) {
@@ -86,6 +87,7 @@ export function buildCragExplainMemoryText(args: {
   lines.push('  - large-file: backend bounded large-file excerpts');
   lines.push('  - web evidence: backend-cached raw web evidence (freshness-sensitive)');
   lines.push('  - web promoted: backend-promoted reusable web-backed facts');
+  lines.push('  - promotion/freshness/conflict states (staged/trusted/stale/contradictory) stay backend-canonical');
   lines.push('  - mirrors (MEMORY.md + memory/*.md): support/export/debug surfaces only');
 
   return lines.join('\n');

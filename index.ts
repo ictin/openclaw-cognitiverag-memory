@@ -2632,9 +2632,16 @@ export default function register(api: any) {
     }
 
     if (intent === 'memory_summary') {
-      const mirrorBullets = Array.from(
-        new Set([...(await collectMemoryBullets(memoryFile)), ...(await collectMemoryBullets(workspaceMemoryFile))]),
-      );
+      const fallbackMirror = await summarizeFallback({
+        pluginMemoryPath: memoryFile,
+        workspaceMemoryPath: workspaceMemoryFile,
+        maxLines: 120,
+        maxSummaryChars: 2200,
+        maxMessages: 24,
+      });
+      const mirrorBullets = fallbackMirror.cleanedLines.length
+        ? fallbackMirror.cleanedLines
+        : Array.from(new Set([...(await collectMemoryBullets(memoryFile)), ...(await collectMemoryBullets(workspaceMemoryFile))]));
       const nonToken = mirrorBullets.filter((line) => !looksLikeOpaqueToken(line));
       const tokenCount = Math.max(0, mirrorBullets.length - nonToken.length);
       const rawEntries = await readRawEntries(sessionId);
@@ -2660,6 +2667,7 @@ export default function register(api: any) {
         '- Active context engine: cognitiverag-memory (primary).',
         '- Backend/session memory: primary turn-by-turn CRAG context.',
         '- Local lossless session memory: raw + compacted history for recall/quote/expand.',
+        '- Compaction truth: compacted session slices remain lineage-linked and recoverable (not deleted).',
         '- Corpus + large-file memory: excerpt retrieval with provenance for books/files.',
         '- Markdown mirrors (MEMORY.md + daily notes): fallback/user-facing summaries, not the full memory system.',
         '',
@@ -2672,6 +2680,15 @@ export default function register(api: any) {
         ...(durable.length
           ? durable.map((line) => `- ${buildSnippet(line, 180)}`)
           : ['- Durable memory exists, but most entries are still token-like and need curation.']),
+        ...(fallbackMirror.cleanupStats.exactDuplicatesRemoved +
+          fallbackMirror.cleanupStats.nearDuplicatesRemoved +
+          fallbackMirror.cleanupStats.boilerplateRemoved +
+          fallbackMirror.cleanupStats.tokenNoiseRemoved >
+        0
+          ? [
+              `- Mirror hygiene applied: exact dedupe=${fallbackMirror.cleanupStats.exactDuplicatesRemoved}, near dedupe=${fallbackMirror.cleanupStats.nearDuplicatesRemoved}, boilerplate removed=${fallbackMirror.cleanupStats.boilerplateRemoved}, token noise removed=${fallbackMirror.cleanupStats.tokenNoiseRemoved}.`,
+            ]
+          : []),
         ...(tokenCount > 0 ? ['- Opaque validation tokens are intentionally hidden in normal summaries (available only on explicit request).'] : []),
         '',
         'Current conversation context:',
@@ -2691,7 +2708,7 @@ export default function register(api: any) {
           'active context-engine + backend/session memory',
           'local lossless session memory (raw + compacted)',
           titles.length ? 'corpus/large-file index + excerpts' : 'no indexed corpus titles',
-          'markdown mirrors (fallback summaries)',
+          'markdown mirrors (fallback summaries; dedup/boilerplate cleanup)',
         ],
       };
     }
@@ -4019,9 +4036,11 @@ export default function register(api: any) {
         let naturalIntent: NaturalAnswerIntent = 'none';
         let naturalDraft: NaturalAnswerDraft | null = null;
         let deterministicComposerActive = false;
+        let localCompactionActive = false;
         try {
           const compact = (await readCompactStore(sessionId)) ?? (await rebuildCompaction(sessionId));
           if (Array.isArray(compact?.items) && compact.items.length) {
+            localCompactionActive = true;
             const chunkLines = compact.items
               .slice(-4)
               .map((item) => `- ${item.chunkId} (seq ${item.startSeq}-${item.endSeq}): ${item.summary}`);
@@ -4061,15 +4080,27 @@ export default function register(api: any) {
             fallbackPrompt =
               'Fallback memory mirror note: mirror metadata exists, but for corpus/book questions prioritize corpus/large-file/session evidence over mirror token lists.';
           } else if (naturalIntent === 'memory_summary') {
-            const mirrorBullets = Array.from(
-              new Set([...(await collectMemoryBullets(memoryFile)), ...(await collectMemoryBullets(workspaceMemoryFile))]),
-            );
+            const mirrorBullets = fallback.cleanedLines.length
+              ? fallback.cleanedLines
+              : Array.from(new Set([...(await collectMemoryBullets(memoryFile)), ...(await collectMemoryBullets(workspaceMemoryFile))]));
             const nonTokenBullets = mirrorBullets.filter((line) => !looksLikeOpaqueToken(line)).slice(0, 4);
             const tokenCount = Math.max(0, mirrorBullets.length - nonTokenBullets.length);
+            const cleanupApplied =
+              Number(fallback.cleanupStats?.exactDuplicatesRemoved ?? 0) +
+                Number(fallback.cleanupStats?.nearDuplicatesRemoved ?? 0) +
+                Number(fallback.cleanupStats?.boilerplateRemoved ?? 0) +
+                Number(fallback.cleanupStats?.tokenNoiseRemoved ?? 0) >
+              0;
             const compact = [
               'Fallback memory mirror (summary only):',
               ...nonTokenBullets.map((line) => `- ${buildSnippet(line, 160)}`),
+              cleanupApplied
+                ? `- mirror cleanup: exact dedupe=${fallback.cleanupStats.exactDuplicatesRemoved}, near dedupe=${fallback.cleanupStats.nearDuplicatesRemoved}, boilerplate removed=${fallback.cleanupStats.boilerplateRemoved}, token noise removed=${fallback.cleanupStats.tokenNoiseRemoved}`
+                : '',
               tokenCount > 0 ? `- opaque tokens available on explicit request: ${tokenCount}` : '',
+              localCompactionActive || fallback.compactionAware
+                ? '- compaction note: older context may be compacted locally but remains recoverable via /crag_session_quote and /crag_session_expand.'
+                : '',
             ]
               .filter(Boolean)
               .join('\n');

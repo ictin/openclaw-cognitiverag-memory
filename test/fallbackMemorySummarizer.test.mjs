@@ -25,6 +25,7 @@ async function cleanup() {
   const r1 = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 10, maxMessages: 5, maxSummaryChars: 200 });
   assert.equal(r1.summary, '');
   assert.deepEqual(r1.messages, []);
+  assert.deepEqual(r1.cleanedLines, []);
 
   // 2) deterministic output for same input
   const sample = ['- fact A', '- fact B', '- fact C', '- fact B', '- fact D'];
@@ -34,6 +35,7 @@ async function cleanup() {
   const b = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 10, maxMessages: 10, maxSummaryChars: 200 });
   assert.equal(a.summary, b.summary);
   assert.deepEqual(a.messages, b.messages);
+  assert.deepEqual(a.cleanedLines, b.cleanedLines);
   // duplicates collapsed
   assert(!a.summary.includes('- fact B\n- fact B'));
 
@@ -46,6 +48,42 @@ async function cleanup() {
   // sourceCounts should reflect files read
   assert.equal(r.sourceCounts.plugin, 2);
   assert.equal(r.sourceCounts.workspace, 2);
+
+  // 2e) boilerplate + token noise + near-duplicate cleanup remains deterministic
+  await writeFileSafe(
+    TMP_PLUGIN,
+    [
+      'Memory summary (older context; use as background)',
+      'Project preference: use deterministic tests first',
+      'Project preference - use deterministic tests first',
+      'hash=abcdef0123456789abcdef0123456789',
+      'Sender (untrusted metadata): user=alice',
+    ].join('\n'),
+  );
+  await writeFileSafe(TMP_WORKSPACE, ['Project preference: use deterministic tests first.'].join('\n'));
+  const cleaned = await summarizeFallback({
+    pluginMemoryPath: TMP_PLUGIN,
+    workspaceMemoryPath: TMP_WORKSPACE,
+    maxLines: 20,
+    maxMessages: 20,
+    maxSummaryChars: 800,
+  });
+  assert(cleaned.cleanedLines.length <= 2);
+  assert(cleaned.cleanedLines.some((line) => /project preference/i.test(line)));
+  assert(cleaned.cleanupStats.boilerplateRemoved >= 1);
+  assert(cleaned.cleanupStats.tokenNoiseRemoved >= 1);
+  assert(cleaned.cleanupStats.nearDuplicatesRemoved + cleaned.cleanupStats.exactDuplicatesRemoved >= 1);
+
+  // 2f) compaction-aware signal is surfaced when recoverability wording exists
+  await writeFileSafe(TMP_PLUGIN, ['Compacted history remains recoverable via /crag_session_expand'].join('\n'));
+  const compactionAware = await summarizeFallback({
+    pluginMemoryPath: TMP_PLUGIN,
+    workspaceMemoryPath: TMP_WORKSPACE,
+    maxLines: 10,
+    maxMessages: 10,
+    maxSummaryChars: 400,
+  });
+  assert.equal(compactionAware.compactionAware, true);
 
   // 2c) default paths are distinct and deterministic (sanity check)
   assert.notEqual(DEFAULTS.pluginMemoryPath, DEFAULTS.workspaceMemoryPath);
@@ -70,6 +108,7 @@ async function cleanup() {
   const r3 = await summarizeFallback({ pluginMemoryPath: TMP_PLUGIN, workspaceMemoryPath: TMP_WORKSPACE, maxLines: 10, maxMessages: 5 });
   assert.equal(r3.summary, '');
   assert.deepEqual(r3.messages, []);
+  assert.equal(r3.compactionAware, false);
 
   console.log('ALL TESTS PASSED');
   process.exit(0);

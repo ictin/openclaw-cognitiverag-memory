@@ -31,7 +31,9 @@ assert.match(text, /backend-derived source classes:\s*corpus, web evidence, web 
 assert.match(text, /backend ownership:\s*canonical memory\/retrieval\/discovery intelligence/i);
 assert.match(text, /web evidence:\s*backend-cached raw web evidence/i);
 assert.match(text, /web promoted:\s*backend-promoted reusable web-backed facts/i);
-assert.match(text, /mirrors are supporting\/export layers, not canonical intelligence/i);
+assert.match(text, /mirrors are supporting\/export\/debug layers, not canonical intelligence/i);
+assert.match(text, /compaction truth:\s*compacted local\/session slices keep lineage and remain recoverable/i);
+assert.match(text, /staged\/trusted\/stale\/contradictory/i);
 assert.match(text, /backend discovery plan surfaced:\s*yes/i);
 assert.match(text, /bounded discovery items:\s*2/i);
 
