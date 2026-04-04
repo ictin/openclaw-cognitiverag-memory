@@ -20,7 +20,11 @@ import {
 } from './src/client/backendClient.js';
 import { buildBackendSelectorPrompt } from './src/engine/assemble.js';
 import { buildCragExplainMemoryText } from './src/commands/cragExplainMemory.js';
-import { deriveOnlineLaneStatus, deriveSourceClasses } from './src/validators/contractValidator.js';
+import {
+  deriveOnlineLaneStatus,
+  deriveSourceClasses,
+  type ContractValidation,
+} from './src/validators/contractValidator.js';
 
 const COG_RAG_BASE = 'http://127.0.0.1:8000';
 
@@ -600,6 +604,31 @@ function normalizeNaturalUserQuery(input: string): string {
   return raw.replace(/\s+/g, ' ').trim();
 }
 
+function extractPromptTextFromAssemblePrompt(prompt: unknown): string {
+  if (typeof prompt === 'string') return normalizeNaturalUserQuery(prompt);
+  if (!prompt || typeof prompt !== 'object') return '';
+  const typed = prompt as Record<string, unknown>;
+  const directText =
+    (typeof typed.message === 'string' && typed.message) ||
+    (typeof typed.text === 'string' && typed.text) ||
+    (typeof typed.content === 'string' && typed.content) ||
+    '';
+  if (directText) return normalizeNaturalUserQuery(directText);
+  if (Array.isArray(typed.content)) {
+    for (const part of typed.content) {
+      if (typeof part === 'string') {
+        const text = normalizeNaturalUserQuery(part);
+        if (text) return text;
+        continue;
+      }
+      if (!part || typeof part !== 'object') continue;
+      const text = normalizeNaturalUserQuery(String((part as Record<string, unknown>)?.text ?? ''));
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
 function detectRecallIntent(query: string): RecallIntent {
   const q = String(query ?? '').toLowerCase();
   if (!q) return 'general';
@@ -639,10 +668,34 @@ function detectNaturalAnswerIntent(query: string): NaturalAnswerIntent {
   return detectNaturalIntentBridge(query);
 }
 
+function isCorpusInventoryQuery(query: string): boolean {
+  const q = normalizeNaturalUserQuery(query).toLowerCase();
+  if (!q || !q.includes('book')) return false;
+  return (
+    q.includes('books you have in memory') ||
+    q.includes('books do you have in memory') ||
+    q.includes('list all books') ||
+    q.includes('what books do you have') ||
+    q.includes('show all books') ||
+    q.includes('with provenance')
+  );
+}
+
+function hasWebSourceClasses(explanation: ContractValidation): boolean {
+  const classes = deriveSourceClasses(explanation);
+  return classes.includes('web evidence') || classes.includes('web promoted');
+}
+
 function looksLikeOpaqueToken(value: string): boolean {
   const text = String(value ?? '').trim();
   if (!text) return false;
-  return /[A-Z0-9]{6,}[-_][A-Z0-9-]{4,}/.test(text) || /^[A-Z0-9_-]{18,}$/.test(text);
+  const lowered = text.toLowerCase();
+  return (
+    lowered.includes('opaque') ||
+    lowered.includes('validation token') ||
+    /[A-Z0-9]{6,}[-_][A-Z0-9-]{4,}/.test(text) ||
+    /^[A-Z0-9_-]{18,}$/.test(text)
+  );
 }
 
 function sourceBaseWeight(source: RecallHit['source'], intent: RecallIntent): number {
@@ -2128,6 +2181,12 @@ export default function register(api: any) {
       if (/do you remember any complete book/i.test(query)) {
         lines.push('- complete-book rule: explain books are stored/retrieved as chunked corpus evidence with provenance, not one monolithic memory item.');
       }
+    } else if (intent === 'web') {
+      lines.push('Auto web evidence routing:');
+      lines.push('- freshness-sensitive query: prefer backend investigative/web routing over generic model fallback.');
+      lines.push('- state the source class explicitly: raw web evidence or web promoted memory.');
+      lines.push('- if backend selection contains no web evidence, answer exactly with "no evidence found" before any explanation.');
+      lines.push('- do not reuse earlier generic refusal text for this turn.');
     } else if (intent === 'architecture') {
       lines.push('Auto architecture truth contract:');
       lines.push('- cognitiverag-memory is active context engine when slot says so.');
@@ -2262,7 +2321,11 @@ export default function register(api: any) {
     return { outputText: text, agentType, taskType, channelType };
   };
 
-  const buildNaturalAnswerDraft = async (sessionId: string, userQuery: string): Promise<NaturalAnswerDraft | null> => {
+  const buildNaturalAnswerDraft = async (
+    sessionId: string,
+    userQuery: string,
+    backendExplanation: ContractValidation,
+  ): Promise<NaturalAnswerDraft | null> => {
     const intent = detectNaturalAnswerIntent(userQuery);
     if (intent === 'none') return null;
     const query = normalizeNaturalUserQuery(userQuery);
@@ -2781,10 +2844,24 @@ export default function register(api: any) {
       return {
         intent,
         text: short(
-          `I do not currently have stored remembered evidence for "${topic || retrievalQuery}". ` +
+          `no evidence found.\nI do not currently have stored remembered evidence for "${topic || retrievalQuery}". ` +
             'If you want, I can still provide general background knowledge, but that would not be from stored memory.',
         ),
         sourceBasis: ['no stored memory evidence found for topic'],
+      };
+    }
+
+    if (intent === 'web') {
+      if (hasWebSourceClasses(backendExplanation)) return null;
+      return {
+        intent,
+        text: [
+          'no evidence found.',
+          'Source class: none. No raw web evidence or promoted web memory was selected for this freshness-sensitive query.',
+        ].join('\n'),
+        sourceBasis: [
+          backendExplanation.ok ? 'backend investigative selector returned no web source classes' : 'backend selector explanation unavailable',
+        ],
       };
     }
 
@@ -2806,6 +2883,40 @@ export default function register(api: any) {
             'web evidence lane availability check',
             'truthfulness guard: no guessing on freshness-sensitive prices',
             'web promoted memory held back for current-price claims without fresh verification',
+          ],
+        };
+      }
+      if (q.includes('where did that remembered information come from') || q.includes('raw, compacted, or mirrored')) {
+        const text = [
+          'Remembered information comes from layered CRAG-backed stores, not from a single mirror file.',
+          '- raw: recent turn-level backend/session memory and local lossless raw session entries.',
+          '- compacted: older local/session history may be compacted into lineage-linked summaries, but those slices remain recoverable.',
+          '- mirrored: MEMORY.md and daily notes are support/export mirrors only, not canonical backend memory.',
+          'Source priority: backend/session memory first, local raw/compacted session recall second, mirrors last.',
+        ].join('\n');
+        return {
+          intent,
+          text,
+          sourceBasis: [
+            'layered memory truth contract',
+            'local lossless raw+compacted session recall',
+            'mirror-noncanonical wording guard',
+          ],
+        };
+      }
+      if (q.includes('if older session memory was compacted') || q.includes('does that mean it was lost')) {
+        const text = [
+          'No. Compacted older session memory is not treated as lost.',
+          'Compaction is additive: older turns may be compressed into lineage-linked summaries for budget control, while the memory remains recoverable via raw/expanded recall paths.',
+          'Mirrors can be incomplete, but backend/session memory and local lossless recall remain primary.',
+        ].join('\n');
+        return {
+          intent,
+          text,
+          sourceBasis: [
+            'compaction recoverability contract',
+            'backend/session memory remains canonical',
+            'mirror completeness kept explicitly secondary',
           ],
         };
       }
@@ -2873,6 +2984,41 @@ export default function register(api: any) {
     }
 
     if (intent === 'corpus') {
+      if (isCorpusInventoryQuery(query)) {
+        const corpusStore = await readCorpusStore();
+        const largeStore = await readLargeFileStore();
+        const items = [
+          ...corpusStore.docs.map((doc) => ({
+            title: String(doc.title ?? '').trim(),
+            sourceClass: 'corpus',
+            sourcePath: String(doc.sourcePath ?? '').trim(),
+          })),
+          ...largeStore.docs.map((doc) => ({
+            title: String(doc.title ?? '').trim(),
+            sourceClass: 'large-file',
+            sourcePath: String(doc.sourcePath ?? '').trim(),
+          })),
+        ]
+          .filter((item) => item.title && item.sourcePath)
+          .sort((a, b) => a.title.localeCompare(b.title) || a.sourcePath.localeCompare(b.sourcePath));
+        if (!items.length) {
+          return {
+            intent,
+            text: 'no evidence found.\nNo indexed books with provenance are currently available in memory/corpus.',
+            sourceBasis: ['corpus/large-file inventory is empty'],
+          };
+        }
+        const lines = ['Books in memory with provenance:'];
+        for (const item of items) {
+          lines.push(`- ${buildSnippet(item.title, 160)} | source class: ${item.sourceClass} | path: ${item.sourcePath}`);
+        }
+        return {
+          intent,
+          text: short(lines.join('\n'), 3200),
+          sourceBasis: ['stable corpus/large-file inventory with provenance'],
+        };
+      }
+
       const effectiveQuery = await buildCorpusEffectiveQuery(sessionId, query);
       const mirrorPriorityHits = await collectPriorityMirrorTopicHits(effectiveQuery, 2);
       const largeHits = await collectLargeFileRecallHits(effectiveQuery, 5);
@@ -2887,7 +3033,7 @@ export default function register(api: any) {
       if (!ranked.length) {
         return {
           intent,
-          text: 'No matched corpus excerpt is currently available for this query; only metadata-level memory is visible.',
+          text: 'no evidence found.\nNo matched corpus excerpt is currently available for this query.',
           sourceBasis: ['corpus retrieval returned no excerpt hits'],
         };
       }
@@ -2952,6 +3098,7 @@ export default function register(api: any) {
     if (
       intent !== 'memory_summary' &&
       intent !== 'memory_topic' &&
+      intent !== 'web' &&
       intent !== 'corpus' &&
       intent !== 'architecture' &&
       intent !== 'skill_generation' &&
@@ -2968,6 +3115,14 @@ export default function register(api: any) {
       }
       const text = extractTextContent(msg?.content);
       if (intent === 'memory_summary' && isTokenHeavyAssistantText(text)) continue;
+      if (
+        intent === 'web' &&
+        (/I can.?t see live prices directly/i.test(text) ||
+          /I cannot verify a fresh live/i.test(text) ||
+          /generic knowledge/i.test(text))
+      ) {
+        continue;
+      }
       if (
         intent === 'corpus' &&
         (/Only the title-level memory:/i.test(text) ||
@@ -2998,6 +3153,7 @@ export default function register(api: any) {
     if (
       intent !== 'memory_summary' &&
       intent !== 'memory_topic' &&
+      intent !== 'web' &&
       intent !== 'corpus' &&
       intent !== 'architecture' &&
       intent !== 'skill_generation' &&
@@ -3014,6 +3170,8 @@ export default function register(api: any) {
           ? 'memory_summary'
           : intent === 'memory_topic'
             ? 'memory_topic'
+            : intent === 'web'
+              ? 'architecture_overview'
             : intent === 'corpus'
               ? 'corpus_overview'
               : 'architecture_overview';
@@ -3045,6 +3203,7 @@ export default function register(api: any) {
     if (
       intent !== 'memory_summary' &&
       intent !== 'memory_topic' &&
+      intent !== 'web' &&
       intent !== 'corpus' &&
       intent !== 'architecture' &&
       intent !== 'skill_generation' &&
@@ -3057,6 +3216,8 @@ export default function register(api: any) {
         ? 'memory_summary'
         : intent === 'memory_topic'
           ? 'memory_topic'
+          : intent === 'web'
+            ? 'architecture_overview'
           : intent === 'corpus'
             ? 'corpus_overview'
             : 'architecture_overview';
@@ -3973,7 +4134,7 @@ export default function register(api: any) {
           ? Math.max(256, Math.floor(params.tokenBudget))
           : 4096;
         const freshTailCount = 20;
-        const latestUserQueryFromPrompt = normalizeNaturalUserQuery(String((params as any)?.prompt ?? ''));
+        const latestUserQueryFromPrompt = extractPromptTextFromAssemblePrompt((params as any)?.prompt);
         const latestUserQueryForRouting = latestUserQueryFromPrompt || latestUserQueryFromMessages(inputMessages);
         const preflightIntent = latestUserQueryForRouting ? detectNaturalAnswerIntent(latestUserQueryForRouting) : 'none';
         const backendIntentFamily = toBackendIntentFamily(preflightIntent);
@@ -4120,13 +4281,14 @@ export default function register(api: any) {
         if (latestUserQuery) {
           naturalIntent = detectNaturalAnswerIntent(latestUserQuery);
           const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
-          naturalDraft = await buildNaturalAnswerDraft(sessionId, latestUserQuery);
+          naturalDraft = await buildNaturalAnswerDraft(sessionId, latestUserQuery, assemblyRes.explanation);
           if (naturalRoutingPrompt) {
             deterministicComposerActive =
               !!naturalDraft &&
               (
                 naturalIntent === 'memory_summary' ||
                 naturalIntent === 'memory_topic' ||
+                naturalIntent === 'web' ||
                 naturalIntent === 'corpus' ||
                 naturalIntent === 'architecture' ||
                 naturalIntent === 'skill_generation' ||
@@ -4138,8 +4300,10 @@ export default function register(api: any) {
                 ? '\n\nDeterministic final-answer contract for memory summary:\n- Output six sections exactly: Memory stack in use (primary -> supporting); About you; Recent durable facts; Current conversation context; Books/corpus I can draw from; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Keep CRAG/session/corpus layers primary and markdown mirrors explicitly secondary.'
                 : naturalIntent === 'memory_topic'
                   ? '\n\nDeterministic final-answer contract for topic-scoped remember prompts:\n- Use only stored/retrieved evidence for "remember" claims (session/promoted/corpus/large-file).\n- If stored evidence is absent, state that clearly and separate any optional general-knowledge fallback.\n- Do not replace topic-scoped answer with generic memory-stack dump unless user explicitly asked for architecture.'
-                : naturalIntent === 'corpus'
-                  ? '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
+                  : naturalIntent === 'web'
+                    ? '\n\nDeterministic final-answer contract for freshness-sensitive web prompts:\n- Prefer backend investigative/web evidence over generic model knowledge.\n- State the source class explicitly.\n- If no web evidence is selected, answer exactly with "no evidence found" and do not hallucinate a live value.'
+                  : naturalIntent === 'corpus'
+                    ? '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
                   : naturalIntent === 'skill_generation'
                     ? '\n\nDeterministic final-answer contract for skill generation:\n- Use backend skill pack artifacts when available.\n- Include explicit artifact usage notes (principles/templates/examples/rubric/anti-pattern/workflow).\n- Record execution memory write result truthfully.'
                     : naturalIntent === 'skill_explain'
@@ -4197,7 +4361,7 @@ export default function register(api: any) {
         messages = pruneMessagesForDeterministicIntent(boundedMessages, naturalIntent);
         if (deterministicComposerActive && naturalDraft) {
           const latestUserQueryForDeterministic =
-            normalizeNaturalUserQuery(String((params as any)?.prompt ?? '')) ||
+            extractPromptTextFromAssemblePrompt((params as any)?.prompt) ||
             latestUserQueryFromMessages(inputMessages);
           const hardShortCircuit = buildHardDeterministicMessages(
             naturalIntent,
@@ -4271,6 +4435,56 @@ export default function register(api: any) {
             }),
         );
         await markFail(error);
+        const latestUserQuery =
+          extractPromptTextFromAssemblePrompt((params as any)?.prompt) || latestUserQueryFromMessages(inputMessages);
+        const failureIntent = latestUserQuery ? detectNaturalAnswerIntent(latestUserQuery) : 'none';
+        let draft: NaturalAnswerDraft | null = null;
+        if (failureIntent === 'web' && latestUserQuery) {
+          draft = {
+            intent: 'web',
+            text: [
+              'web retrieval failed for this price query.',
+              'Source class: none. No raw web evidence or promoted web memory was available in this turn.',
+            ].join('\n'),
+            sourceBasis: ['backend web retrieval failed before evidence assembly'],
+          };
+        } else if (failureIntent === 'corpus' && latestUserQuery) {
+          draft = {
+            intent: 'corpus',
+            text: [
+              'no evidence found.',
+              'No corpus/memory evidence was available in this turn.',
+            ].join('\n'),
+            sourceBasis: ['backend corpus retrieval failed before evidence assembly'],
+          };
+        } else if ((failureIntent === 'memory_summary' || failureIntent === 'memory_topic') && latestUserQuery) {
+          draft = {
+            intent: failureIntent,
+            text: [
+              'Backend/session memory is canonical memory for this system.',
+              'Markdown mirrors are support/export/debug summaries only, not canonical backend memory.',
+              'This turn could not retrieve backend/session evidence, so no evidence found beyond those architecture-level truths.',
+            ].join('\n'),
+            sourceBasis: ['backend memory retrieval failed before evidence assembly'],
+          };
+        } else if (failureIntent === 'architecture' && latestUserQuery) {
+          draft = {
+            intent: 'architecture',
+            text: [
+              'Backend/session memory remains canonical; mirrors remain support/export/debug only.',
+              'Compacted session memory is treated as recoverable lineage-linked memory, not as silent loss.',
+              'This turn could not retrieve additional backend evidence, so I am answering only from the runtime architecture contract.',
+            ].join('\n'),
+            sourceBasis: ['backend architecture/memory retrieval failed before evidence assembly'],
+          };
+        }
+        if (draft && latestUserQuery) {
+          return toEngineAssembleResult({
+            messages: buildHardDeterministicMessages(failureIntent, latestUserQuery, draft),
+            estimatedTokens: Math.ceil(draft.text.length / 4),
+            totalTokens: Math.ceil(draft.text.length / 4),
+          });
+        }
         return toEngineAssembleResult({
           messages: inputMessages,
           estimatedTokens: 0,
