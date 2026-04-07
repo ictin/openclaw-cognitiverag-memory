@@ -3,6 +3,12 @@ import path from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
+const GATEWAY_CALL_TIMEOUT_MS = Math.max(8000, Number(process.env.LIVE_ACCEPTANCE_GATEWAY_TIMEOUT_MS || 15000));
+const GATEWAY_RETRY_ATTEMPTS = Math.max(1, Number(process.env.LIVE_ACCEPTANCE_GATEWAY_RETRY_ATTEMPTS || 3));
+const PROMPT_POLL_INTERVAL_MS = Math.max(1000, Number(process.env.LIVE_ACCEPTANCE_PROMPT_POLL_INTERVAL_MS || 2400));
+const PROMPT_WAIT_TIMEOUT_MS = Math.max(12000, Number(process.env.LIVE_ACCEPTANCE_PROMPT_WAIT_TIMEOUT_MS || 45000));
+const RUN_DEADLINE_MS = Math.max(60000, Number(process.env.LIVE_ACCEPTANCE_RUN_DEADLINE_MS || (12 * 60 * 1000)));
+
 function nowStamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
@@ -518,12 +524,12 @@ const GROUPS = [
 
 function callGateway(method, params, rawFile) {
   let raw = '';
-  const attempts = 4;
+  const attempts = GATEWAY_RETRY_ATTEMPTS;
   for (let i = 1; i <= attempts; i += 1) {
     try {
       raw = execFileSync('openclaw', ['gateway', 'call', method, '--params', JSON.stringify(params)], {
         encoding: 'utf8',
-        timeout: 20000,
+        timeout: GATEWAY_CALL_TIMEOUT_MS,
       });
       break;
     } catch (error) {
@@ -562,21 +568,30 @@ function lastAssistantText(messages) {
   return '';
 }
 
-function runPrompt(key, prompt, artifactsDir, idx, timeoutMs = 18000) {
-  const before = getSession(key, artifactsDir, idx);
-  const beforeAssistant = countAssistant(before?.messages);
-  sendPrompt(key, prompt, artifactsDir, idx + 1);
-  let latest = before;
-  const attempts = Math.max(1, Math.floor(timeoutMs / 3000));
-  for (let i = 0; i < attempts; i += 1) {
-    sleepMs(2400);
-    latest = getSession(key, artifactsDir, idx + 2 + i);
-    const afterAssistant = countAssistant(latest?.messages);
-    if (afterAssistant > beforeAssistant) {
-      return { text: lastAssistantText(latest?.messages), session: latest, timedOut: false };
+function runPrompt(key, prompt, artifactsDir, idx, timeoutMs = PROMPT_WAIT_TIMEOUT_MS) {
+  try {
+    const before = getSession(key, artifactsDir, idx);
+    const beforeAssistant = countAssistant(before?.messages);
+    sendPrompt(key, prompt, artifactsDir, idx + 1);
+    let latest = before;
+    const attempts = Math.max(1, Math.floor(timeoutMs / PROMPT_POLL_INTERVAL_MS));
+    for (let i = 0; i < attempts; i += 1) {
+      sleepMs(PROMPT_POLL_INTERVAL_MS);
+      latest = getSession(key, artifactsDir, idx + 2 + i);
+      const afterAssistant = countAssistant(latest?.messages);
+      if (afterAssistant > beforeAssistant) {
+        return { text: lastAssistantText(latest?.messages), session: latest, timedOut: false };
+      }
     }
+    return { text: lastAssistantText(latest?.messages), session: latest, timedOut: true };
+  } catch (error) {
+    return {
+      text: `gateway call failed while running prompt: ${String(error?.message || error)}`,
+      session: null,
+      timedOut: true,
+      gatewayError: true,
+    };
   }
-  return { text: lastAssistantText(latest?.messages), session: latest, timedOut: true };
 }
 
 function renderMarkdown(summary) {
@@ -712,6 +727,10 @@ function run() {
   const tests = [];
   let callIdx = 1;
   const sessionKeys = new Map();
+  const runStartedAt = Date.now();
+  const runDeadlineAt = runStartedAt + RUN_DEADLINE_MS;
+  let abortedByDeadline = false;
+  let abortReason = '';
   const groupFilterEnv = String(process.env.LIVE_ACCEPTANCE_GROUPS ?? '').trim();
   const selectedGroups = new Set(
     groupFilterEnv
@@ -736,23 +755,68 @@ function run() {
     const mapKey = `${agent}:${sessionName}`;
     if (sessionKeys.has(mapKey)) return sessionKeys.get(mapKey);
     const key = makeSessionKey(sessionName, agent);
-    createSession(key, `Live acceptance ${sessionName} ${Date.now()}`, reportDir, callIdx++);
+    try {
+      createSession(key, `Live acceptance ${sessionName} ${Date.now()}`, reportDir, callIdx++);
+    } catch (error) {
+      const msg = `createSession failed for ${sessionName}: ${String(error?.message || error)}`;
+      fs.appendFileSync(path.join(reportDir, 'gateway_errors.log'), `${new Date().toISOString()} ${msg}\n`);
+    }
     sessionKeys.set(mapKey, key);
     return key;
   };
 
   const timeoutFor = (testId, groupId) => {
-    if (String(groupId) === 'G4') return 90000;
-    if (String(groupId) === 'G12') return 90000;
+    if (String(groupId) === 'G4') return 45000;
+    if (String(groupId) === 'G12') return 45000;
     if (String(testId).startsWith('T14.')) return 30000;
     return 22000;
   };
 
+  const shouldAbortNow = (scope = 'test') => {
+    if (Date.now() < runDeadlineAt) return false;
+    abortedByDeadline = true;
+    if (!abortReason) abortReason = `run deadline exceeded before ${scope}`;
+    return true;
+  };
+
+  const pushTimedOutFailure = (entry, reason) => {
+    tests.push({
+      id: entry.id,
+      group: entry.group,
+      groupTitle: entry.groupTitle,
+      prompt: entry.prompt,
+      response: '',
+      score: 0,
+      reason,
+      critical: entry.critical,
+      timedOut: true,
+      modelRoute: entry.modelRoute || 'weak/default',
+    });
+  };
+
+  const plannedEntries = [];
   for (const group of GROUPS) {
     if (!wantsGroup(group.id)) continue;
+    for (const test of group.tests) {
+      plannedEntries.push({
+        id: test.id,
+        group: group.id,
+        groupTitle: group.title,
+        prompt: test.prompt,
+        critical: CRITICAL.has(test.id),
+        modelRoute: 'weak/default',
+      });
+    }
+  }
+
+  for (const group of GROUPS) {
+    if (!wantsGroup(group.id)) continue;
+    if (shouldAbortNow(`group ${group.id}`)) break;
     const key = getOrCreate(group.session, 'main');
     for (const test of group.tests) {
-      const result = runPrompt(key, test.prompt, reportDir, callIdx, timeoutFor(test.id, group.id));
+      if (shouldAbortNow(`test ${test.id}`)) break;
+      const remainingMs = Math.max(4000, runDeadlineAt - Date.now());
+      const result = runPrompt(key, test.prompt, reportDir, callIdx, Math.min(timeoutFor(test.id, group.id), remainingMs));
       callIdx += 3;
       const response = String(result.text || '');
       updateIdsFromText(ctx, response);
@@ -770,6 +834,7 @@ function run() {
         modelRoute: 'weak/default',
       });
     }
+    if (abortedByDeadline) break;
   }
 
   // Group 13 (cross-model robustness)
@@ -781,9 +846,31 @@ function run() {
     { id: 'T13.5', prompt: 'Now explain which principles/templates/examples/rubric/anti-patterns you used.' },
   ];
   if (wantsGroup('G13')) {
+    for (const test of crossPrompts) {
+      plannedEntries.push({
+        id: test.id,
+        group: 'G13',
+        groupTitle: 'cross-model robustness',
+        prompt: `${test.prompt} [weak/default]`,
+        critical: false,
+        modelRoute: 'weak/default',
+      });
+      plannedEntries.push({
+        id: `${test.id}.strong`,
+        group: 'G13',
+        groupTitle: 'cross-model robustness',
+        prompt: `${test.prompt} [strong/codex]`,
+        critical: false,
+        modelRoute: 'strong/codex',
+      });
+    }
+  }
+  if (wantsGroup('G13') && !abortedByDeadline) {
     const weakKey = getOrCreate('cross_model_weak', 'main');
     for (const test of crossPrompts) {
-      const r = runPrompt(weakKey, test.prompt, reportDir, callIdx, 18000);
+      if (shouldAbortNow(`test ${test.id}`)) break;
+      const remainingMs = Math.max(4000, runDeadlineAt - Date.now());
+      const r = runPrompt(weakKey, test.prompt, reportDir, callIdx, Math.min(18000, remainingMs));
       callIdx += 3;
       updateIdsFromText(ctx, r.text);
       const s = scoreById(test.id, r.text, ctx);
@@ -791,9 +878,12 @@ function run() {
     }
 
     try {
+      if (abortedByDeadline) throw new Error('skipped strong route due to run deadline');
       const strongKey = getOrCreate('cross_model_strong', 'codex');
       for (const test of crossPrompts) {
-        const r = runPrompt(strongKey, test.prompt, reportDir, callIdx, 18000);
+        if (shouldAbortNow(`test ${test.id}.strong`)) break;
+        const remainingMs = Math.max(4000, runDeadlineAt - Date.now());
+        const r = runPrompt(strongKey, test.prompt, reportDir, callIdx, Math.min(18000, remainingMs));
         callIdx += 3;
         updateIdsFromText(ctx, r.text);
         const s = scoreById(test.id, r.text, ctx);
@@ -825,11 +915,33 @@ function run() {
     { id: 'T14.4', prompt: 'Show me a prior execution case for a recipe short if one exists.' },
   ];
   if (wantsGroup('G14')) {
-    execSync('openclaw gateway restart', { stdio: 'pipe', shell: '/bin/bash' });
-    sleepMs(2200);
+    for (const test of restartTests) {
+      plannedEntries.push({
+        id: test.id,
+        group: 'G14',
+        groupTitle: 'restart persistence',
+        prompt: test.prompt,
+        critical: CRITICAL.has(test.id),
+        modelRoute: 'weak/default',
+      });
+    }
+  }
+  if (wantsGroup('G14')) {
+    try {
+      if (abortedByDeadline) throw new Error('skipped restart lane due to run deadline');
+      execSync('openclaw gateway restart', { stdio: 'pipe', shell: '/bin/bash' });
+      sleepMs(2200);
+    } catch (error) {
+      fs.appendFileSync(
+        path.join(reportDir, 'gateway_errors.log'),
+        `${new Date().toISOString()} gateway restart failed: ${String(error?.message || error)}\n`,
+      );
+    }
     const restartKey = getOrCreate('post_restart', 'main');
     for (const test of restartTests) {
-      const r = runPrompt(restartKey, test.prompt, reportDir, callIdx, timeoutFor(test.id, 'G14'));
+      if (shouldAbortNow(`test ${test.id}`)) break;
+      const remainingMs = Math.max(4000, runDeadlineAt - Date.now());
+      const r = runPrompt(restartKey, test.prompt, reportDir, callIdx, Math.min(timeoutFor(test.id, 'G14'), remainingMs));
       callIdx += 3;
       updateIdsFromText(ctx, r.text);
       const s = scoreById(test.id, r.text, ctx);
@@ -838,7 +950,23 @@ function run() {
   }
 
   // Group 15 optional direct persistence checks
-  if (wantsGroup('G15')) tests.push(...runDirectPersistenceChecks(ctx, reportDir));
+  if (wantsGroup('G15')) {
+    plannedEntries.push(
+      { id: 'T15.1', group: 'G15', groupTitle: 'direct persistence checks', prompt: 'GET execution case by id <lastExecutionId>', critical: false, modelRoute: 'weak/default' },
+      { id: 'T15.2', group: 'G15', groupTitle: 'direct persistence checks', prompt: 'GET similar execution retrieval', critical: false, modelRoute: 'weak/default' },
+      { id: 'T15.3', group: 'G15', groupTitle: 'direct persistence checks', prompt: 'GET evaluations by execution_case_id <lastExecutionId>', critical: false, modelRoute: 'weak/default' },
+    );
+    if (!abortedByDeadline) tests.push(...runDirectPersistenceChecks(ctx, reportDir));
+  }
+
+  if (abortedByDeadline) {
+    const executed = new Set(tests.map((t) => `${t.group}:${t.id}`));
+    for (const entry of plannedEntries) {
+      const key = `${entry.group}:${entry.id}`;
+      if (executed.has(key)) continue;
+      pushTimedOutFailure(entry, `${abortReason}; synthesized timeout for unfinished test`);
+    }
+  }
 
   const testsNormalized = tests.map((t) => ({ ...t, modelRoute: t.modelRoute || 'weak/default' }));
   const groupMap = groupBy(testsNormalized, (t) => t.group);
@@ -903,6 +1031,13 @@ function run() {
       repoIndexHash,
       repoIntentHash,
       extractedFrom: t01 ? 'T0.1' : 'fallback-default-path',
+    },
+    runControl: {
+      deadlineMs: RUN_DEADLINE_MS,
+      startedAt: new Date(runStartedAt).toISOString(),
+      deadlineAt: new Date(runDeadlineAt).toISOString(),
+      abortedByDeadline,
+      abortReason: abortReason || null,
     },
     contextIds: {
       executionIds: ctx.executionIds,
