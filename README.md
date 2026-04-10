@@ -1,6 +1,6 @@
 # OpenClaw CognitiveRAG Memory Adapter
 
-**This repo makes CognitiveRAG usable inside the real OpenClaw runtime.**
+**This repo makes CognitiveRAG usable inside the real OpenClaw runtime.**  
 It is the production integration layer that connects OpenClaw sessions, commands, and context-engine hooks to the CognitiveRAG backend while preserving fail-open safety, live validation, and runtime proof.
 
 ## What this adapter makes possible
@@ -8,18 +8,24 @@ It is the production integration layer that connects OpenClaw sessions, commands
 This adapter exists so OpenClaw can use CognitiveRAG safely and verifiably in real runtime behavior.
 
 It provides:
-- **Runtime-safe integration** between OpenClaw and the CognitiveRAG backend.
-- **Fail-open runtime behavior** so backend degradation does not silently corrupt agent behavior.
-- **Live acceptance validation** so claims are tested in real OpenClaw execution paths.
-- **Runtime proof** so artifacts show which code path and commit were actually loaded.
-- **Clear responsibility boundaries** so backend intelligence stays in the backend.
+- **runtime-safe integration** between OpenClaw and the CognitiveRAG backend
+- **fail-open behavior** so integration issues do not silently turn into unsafe behavior
+- **live acceptance validation** so runtime claims are tested in the real OpenClaw environment
+- **runtime proof** so reports show which plugin path and commit were actually loaded
+- **clear responsibility boundaries** so backend intelligence stays in the backend
 
-## Why it exists
+## Why this exists
 
-CognitiveRAG is the intelligence layer.
+CognitiveRAG is the intelligence layer.  
 This repo is the integration layer.
 
-Without this adapter, strong backend intelligence can still fail in production due to wiring, command routing, runtime drift, or lifecycle mismatch.
+That means this repo owns:
+- OpenClaw wiring
+- context-engine and command registration
+- live smoke checks
+- live acceptance harnesses
+- runtime-proof and report surfaces
+- fail-open integration behavior
 
 ## Core benefits
 
@@ -38,12 +44,12 @@ Without this adapter, strong backend intelligence can still fail in production d
 
 ## What it does not own
 
-This repository does **not** own:
+It does **not** own:
 - retrieval intelligence
-- ranking policy
-- promoted-memory intelligence
-- reasoning intelligence
-- graph intelligence
+- ranking logic
+- promoted memory logic
+- reasoning logic
+- graph logic
 - discovery intelligence
 
 Those belong to `CognitiveRAG`.
