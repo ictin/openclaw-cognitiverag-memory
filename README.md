@@ -1,69 +1,78 @@
 # openclaw-cognitiverag-memory
 
-OpenClaw integration layer for the CognitiveRAG backend.
+Production integration adapter that lets OpenClaw use CognitiveRAG safely in real sessions.
 
-## What This Repo Is
+## What This Adapter Makes Possible
 
-`openclaw-cognitiverag-memory` is the plugin-side adapter that connects OpenClaw runtime surfaces to CognitiveRAG backend APIs.
+With this plugin, an OpenClaw agent can use CognitiveRAG without sacrificing runtime safety:
+- fail-open integration behavior when backend paths degrade
+- stable OpenClaw-facing command/route/context-engine wiring
+- runtime parity proof (`repo code == loaded runtime code`)
+- repeatable live acceptance runs and closure artifacts
+- clear source-truthfulness integration contracts
 
-It is intentionally thin and integration-focused.
+This repository turns backend intelligence into a reliable OpenClaw runtime surface.
 
-## Why It Exists
+## Why The Plugin Exists
 
-OpenClaw needs a stable integration boundary to use CognitiveRAG capabilities (assembly, recall/explain surfaces, health/status reporting) without moving backend intelligence into plugin code.
-
-This repository provides that boundary and verifies it with contract/regression/live-validation harnesses.
+CognitiveRAG backend capabilities are only useful if OpenClaw can consume them safely and consistently. This plugin exists to provide that boundary layer:
+- strict integration contracts
+- operational diagnostics and status visibility
+- regression and live validation harnesses
+- controlled rollout behavior under real runtime conditions
 
 ## What It Owns
 
-This repo owns OpenClaw-facing integration behavior, including:
-- context-engine wiring and registration surfaces
-- command/route/service integration exposed to OpenClaw
-- safe integration behavior (including fail-open/fail-closed handling where policy requires it)
-- runtime-path verification and patch utilities
-- smoke/live acceptance harness orchestration and reporting
+This repo owns OpenClaw integration concerns:
+- context-engine and plugin wiring
+- OpenClaw-facing commands/routes/services/hooks
+- integration-side fail-open/fail-closed behavior required by policy
+- runtime patch/verification utilities
+- smoke, acceptance, and closure orchestration for integration validation
 
 ## What It Does Not Own
 
-This repo does **not** own backend intelligence. It does not define or own:
-- memory policy or long-term memory taxonomy
-- retrieval lane ranking logic
+This repo does **not** own backend intelligence. It does not define:
+- memory intelligence and memory policy
+- retrieval ranking strategy
 - contradiction/compatibility intelligence
 - discovery reasoning policy
-- graph intelligence/modeling
+- graph intelligence
 
-Those responsibilities remain in the `CognitiveRAG` backend repository.
+Those responsibilities belong to the `CognitiveRAG` backend repository.
 
 ## Architecture And Boundaries
 
 Flow:
 1. OpenClaw invokes plugin surfaces.
-2. Plugin normalizes/validates integration request shape.
+2. Plugin validates/normalizes integration input.
 3. Plugin calls CognitiveRAG backend contracts.
-4. Plugin returns policy-compliant, source-truthful responses to OpenClaw.
+4. Plugin returns policy-compliant, source-truthful output to OpenClaw.
 
-Key files:
-- `index.ts` (plugin entrypoint and OpenClaw registration)
-- `src/client/backendClient.ts` (backend integration client)
-- `src/engine/assemble.ts` (assemble integration path)
-- `src/commands/cragExplainMemory.ts` (explain-memory command path)
+Key integration files:
+- `index.ts`
+- `src/client/backendClient.ts`
+- `src/engine/assemble.ts`
+- `src/commands/cragExplainMemory.ts`
 
-## Live Validation And Acceptance
+## Runtime Safety And Live Validation
 
-This repository includes live acceptance runners and closure reporting:
+This repo includes runtime and live-proof tooling:
 - `scripts/run_live_agent_acceptance.mjs`
 - `scripts/run_live_agent_acceptance_closure.mjs`
 - `scripts/score_live_agent_acceptance.mjs`
+- `scripts/apply_openclaw_runtime_patch.mjs`
+- `scripts/verify_openclaw_runtime_patch.mjs`
 
-The acceptance path is used to validate:
-- runtime path parity (`runtimeCodeMatchesRepo` style proof)
-- command/route integration behavior
-- source-class/truthfulness output constraints
-- grouped closure status and artifact emission
+These flows validate:
+- runtime path parity
+- command and route integration correctness
+- source-class/truthfulness integration behavior
+- grouped closure artifact emission
 
 ## Install / Run / Test
 
-Install:
+Install dependencies:
 ```bash
 npm ci
 ```
@@ -81,28 +90,16 @@ npm run test:live-acceptance -- <run_id>
 npm run test:live-acceptance:closure -- <run_id>
 ```
 
-## What Is Working Today
+## Current Status In The Broader Project
 
-- OpenClaw plugin integration and backend contract routing are in place.
-- Regression test walls for assemble/registration/live-reporting are in place.
-- Runtime patch apply/verify scripts are in place.
-- Epic A live-signoff closure work is completed at plugin integration level.
+- Epic A (live signoff) is complete at integration level.
+- Current global phase is Epic B (backend context-design parity).
+- Epic C follows.
+- Graph phase is later and is not current plugin scope.
 
-## Current Project Status
+## Relation To The CognitiveRAG Backend
 
-Current program order:
-1. Epic A completed
-2. Epic B (current): backend context-design parity check and closure of partial areas
-3. Epic C: metrics/smoke/regression safety hardening
-4. Graph layer work later (not current phase)
+- `openclaw-cognitiverag-memory`: OpenClaw integration layer
+- `CognitiveRAG`: backend intelligence and canonical memory/retrieval/context logic
 
-## Relation To CognitiveRAG Backend
-
-- `openclaw-cognitiverag-memory` = OpenClaw integration adapter
-- `CognitiveRAG` = backend intelligence and canonical retrieval/memory/context logic
-
-If a behavior requires changing intelligence policy, the fix belongs in the backend, not this plugin.
-
-## Roadmap Status
-
-This plugin should evolve only where integration contracts, runtime proof, or OpenClaw-facing stability require it.
+If a change requires intelligence policy updates, it should be implemented in `CognitiveRAG`, not here.
