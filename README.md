@@ -1,96 +1,108 @@
 # openclaw-cognitiverag-memory
 
-OpenClaw plugin adapter for CognitiveRAG.
+OpenClaw integration layer for the CognitiveRAG backend.
 
-## What This Repository Is
+## What This Repo Is
 
-`openclaw-cognitiverag-memory` is the OpenClaw integration layer that wires OpenClaw runtime/plugin surfaces to the CognitiveRAG backend.
+`openclaw-cognitiverag-memory` is the plugin-side adapter that connects OpenClaw runtime surfaces to CognitiveRAG backend APIs.
 
-This repository is intentionally thin:
-- it translates OpenClaw requests to backend calls
-- it enforces integration-side fail-closed/fail-open behavior where required by acceptance policy
-- it exposes integration diagnostics, live acceptance harnesses, and contract checks
+It is intentionally thin and integration-focused.
 
-## What Problem It Solves
+## Why It Exists
 
-Without this adapter, OpenClaw cannot reliably consume CognitiveRAG capabilities (context assembly, memory explanation surfaces, promoted-memory traces, runtime status) through stable plugin/runtime contracts.
+OpenClaw needs a stable integration boundary to use CognitiveRAG capabilities (assembly, recall/explain surfaces, health/status reporting) without moving backend intelligence into plugin code.
 
-This repo provides that contract-safe bridge and test harnesses for live signoff.
+This repository provides that boundary and verifies it with contract/regression/live-validation harnesses.
 
-## Current Feature Set
+## What It Owns
 
-- OpenClaw plugin entrypoint (`index.ts`) with command/route integration
-- Backend client wiring and contract validation
-- Assembly integration path checks and error-shape enforcement
-- Runtime integration patch tooling (`scripts/apply_openclaw_runtime_patch.mjs`, `scripts/verify_openclaw_runtime_patch.mjs`)
-- Live acceptance runners and closure aggregator:
-  - `scripts/run_live_agent_acceptance.mjs`
-  - `scripts/run_live_agent_acceptance_closure.mjs`
-  - `scripts/score_live_agent_acceptance.mjs`
-- Regression tests for routing, source/truthfulness wording, status/explain-memory surfaces, and runtime integration
+This repo owns OpenClaw-facing integration behavior, including:
+- context-engine wiring and registration surfaces
+- command/route/service integration exposed to OpenClaw
+- safe integration behavior (including fail-open/fail-closed handling where policy requires it)
+- runtime-path verification and patch utilities
+- smoke/live acceptance harness orchestration and reporting
 
-## What It Does NOT Own
+## What It Does Not Own
 
-This repository does **not** own backend intelligence. It does not own:
-- retrieval strategy
-- memory policy
-- candidate scoring policy
-- contradiction/compatibility reasoning
-- long-context selection strategy
+This repo does **not** own backend intelligence. It does not define or own:
+- memory policy or long-term memory taxonomy
+- retrieval lane ranking logic
+- contradiction/compatibility intelligence
+- discovery reasoning policy
+- graph intelligence/modeling
 
-Those belong to the CognitiveRAG backend repository.
+Those responsibilities remain in the `CognitiveRAG` backend repository.
 
-## Architecture
+## Architecture And Boundaries
 
-High-level flow:
-1. OpenClaw invokes plugin surfaces (commands/hooks/routes/context engine integration surface).
-2. Plugin integration code validates/normalizes request shape.
-3. Plugin calls CognitiveRAG backend APIs.
-4. Plugin returns integration-safe, policy-compliant responses to OpenClaw.
+Flow:
+1. OpenClaw invokes plugin surfaces.
+2. Plugin normalizes/validates integration request shape.
+3. Plugin calls CognitiveRAG backend contracts.
+4. Plugin returns policy-compliant, source-truthful responses to OpenClaw.
 
-Key modules:
-- `index.ts` (plugin registration and integration orchestration)
-- `src/client/backendClient.ts` (backend client)
-- `src/engine/assemble.ts` (assembly-side integration path)
-- `src/commands/cragExplainMemory.ts` (explain-memory command surface)
+Key files:
+- `index.ts` (plugin entrypoint and OpenClaw registration)
+- `src/client/backendClient.ts` (backend integration client)
+- `src/engine/assemble.ts` (assemble integration path)
+- `src/commands/cragExplainMemory.ts` (explain-memory command path)
 
-## Testing
+## Live Validation And Acceptance
+
+This repository includes live acceptance runners and closure reporting:
+- `scripts/run_live_agent_acceptance.mjs`
+- `scripts/run_live_agent_acceptance_closure.mjs`
+- `scripts/score_live_agent_acceptance.mjs`
+
+The acceptance path is used to validate:
+- runtime path parity (`runtimeCodeMatchesRepo` style proof)
+- command/route integration behavior
+- source-class/truthfulness output constraints
+- grouped closure status and artifact emission
+
+## Install / Run / Test
 
 Install:
 ```bash
 npm ci
 ```
 
-Run core regression walls:
+Core regression walls:
 ```bash
 npm run test:assemble
 npm run test:registration
 npm test
 ```
 
-Live acceptance harnesses:
+Live acceptance entrypoints:
 ```bash
 npm run test:live-acceptance -- <run_id>
 npm run test:live-acceptance:closure -- <run_id>
 ```
 
-## Roadmap Status
+## What Is Working Today
+
+- OpenClaw plugin integration and backend contract routing are in place.
+- Regression test walls for assemble/registration/live-reporting are in place.
+- Runtime patch apply/verify scripts are in place.
+- Epic A live-signoff closure work is completed at plugin integration level.
+
+## Current Project Status
 
 Current program order:
-1. Epic A: live signoff (completed)
-2. Epic B: backend context design parity audit (current focus)
-3. Epic C: metrics/smoke/regression safety
-4. Epic E: first graph layer
+1. Epic A completed
+2. Epic B (current): backend context-design parity check and closure of partial areas
+3. Epic C: metrics/smoke/regression safety hardening
+4. Graph layer work later (not current phase)
 
-This plugin repo should only change for integration-contract needs and verified plugin/runtime behavior.
+## Relation To CognitiveRAG Backend
 
-## Relation to CognitiveRAG Backend
+- `openclaw-cognitiverag-memory` = OpenClaw integration adapter
+- `CognitiveRAG` = backend intelligence and canonical retrieval/memory/context logic
 
-- Plugin repo (`openclaw-cognitiverag-memory`) = OpenClaw integration adapter
-- Backend repo (`CognitiveRAG`) = memory/retrieval/context intelligence and canonical truth
+If a behavior requires changing intelligence policy, the fix belongs in the backend, not this plugin.
 
-If behavior requires intelligence changes, fix backend first and keep the plugin thin.
+## Roadmap Status
 
-## Suggested GitHub Topics
-
-`openclaw`, `rag`, `retrieval-augmented-generation`, `plugin`, `typescript`, `integration-testing`, `context-engine`, `cognitiverag`
+This plugin should evolve only where integration contracts, runtime proof, or OpenClaw-facing stability require it.
