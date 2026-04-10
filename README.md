@@ -1,48 +1,54 @@
-# openclaw-cognitiverag-memory
+# OpenClaw CognitiveRAG Memory Adapter
 
-This adapter makes CognitiveRAG usable in OpenClaw production flows with runtime safety, contract discipline, and live-proof validation.
+**This repo makes CognitiveRAG usable inside the real OpenClaw runtime.**
+It is the production integration layer that connects OpenClaw sessions, commands, and context-engine hooks to the CognitiveRAG backend while preserving fail-open safety, live validation, and runtime proof.
 
-## What This Adapter Makes Possible
+## What this adapter makes possible
 
-With this plugin, OpenClaw can consume CognitiveRAG capabilities safely in real sessions:
-- resilient integration behavior under backend degradation (fail-open where required)
-- stable command/route/context-engine integration surfaces
-- runtime parity proof that deployed plugin code matches repo code
-- repeatable live acceptance and closure reporting
+This adapter exists so OpenClaw can use CognitiveRAG safely and verifiably in real runtime behavior.
 
-## Why It Exists
+It provides:
+- **Runtime-safe integration** between OpenClaw and the CognitiveRAG backend.
+- **Fail-open runtime behavior** so backend degradation does not silently corrupt agent behavior.
+- **Live acceptance validation** so claims are tested in real OpenClaw execution paths.
+- **Runtime proof** so artifacts show which code path and commit were actually loaded.
+- **Clear responsibility boundaries** so backend intelligence stays in the backend.
 
-Backend intelligence has no user value if runtime integration is brittle. This repository exists to make CognitiveRAG operationally usable from OpenClaw:
-- clean OpenClaw-facing contracts
-- explicit status and diagnostics surfaces
-- deterministic integration behavior under failure paths
-- verifiable readiness signals from live validation
+## Why it exists
 
-## Core Benefits
+CognitiveRAG is the intelligence layer.
+This repo is the integration layer.
 
-- safer rollouts for memory/retrieval integration
-- lower risk of silent runtime drift
-- clearer proof that live behavior matches intended plugin code
-- faster diagnosis when integration or gateway paths degrade
+Without this adapter, strong backend intelligence can still fail in production due to wiring, command routing, runtime drift, or lifecycle mismatch.
 
-## Ownership Boundaries
+## Core benefits
 
-This repo owns OpenClaw integration:
-- plugin/context-engine wiring
-- OpenClaw-facing command/route/service/hook surfaces
-- integration-side runtime safety behavior
-- live acceptance harness and closure reporting
+- safer production rollout of memory/retrieval integration
+- lower risk of hidden runtime drift
+- stronger confidence from live closure artifacts
+- faster diagnosis when runtime integration degrades
 
-This repo does **not** own backend intelligence:
-- memory policy
-- retrieval ranking logic
-- contradiction/compatibility intelligence
-- discovery intelligence
+## What it owns
+
+- OpenClaw plugin/context-engine wiring
+- OpenClaw-facing command/route/service/hook registration
+- integration-side fail-open/fail-closed behavior required by policy
+- runtime patch/apply/verify surfaces
+- smoke/live acceptance harnesses and closure reporting
+
+## What it does not own
+
+This repository does **not** own:
+- retrieval intelligence
+- ranking policy
+- promoted-memory intelligence
+- reasoning intelligence
 - graph intelligence
+- discovery intelligence
 
 Those belong to `CognitiveRAG`.
 
-## Runtime Safety And Validation
+## Runtime safety and validation
 
 Key proof and validation surfaces:
 - `scripts/run_live_agent_acceptance.mjs`
@@ -53,7 +59,7 @@ Key proof and validation surfaces:
 
 These flows verify runtime parity, integration behavior, and closure artifact integrity.
 
-## Install / Run / Test
+## Install / run / test
 
 ```bash
 npm ci
@@ -64,11 +70,11 @@ npm run test:live-acceptance -- <run_id>
 npm run test:live-acceptance:closure -- <run_id>
 ```
 
-## Current Status In The Wider Project
+## Current status in the wider project
 
-- Epic A integration signoff is complete.
-- Epic B (current) is backend design/code parity.
+- Epic A integration signoff is done.
+- Epic B is current.
 - Epic C is next.
 - Graph work is later.
 
-Backend remains the intelligence layer; this repo remains the integration layer.
+Backend remains the intelligence layer; this repository remains the OpenClaw integration layer.
