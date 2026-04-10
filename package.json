@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "main": "index.ts",
-  "description": "Standalone OpenClaw adapter/plugin for CognitiveRAG integration.",
+  "description": "OpenClaw integration adapter for the CognitiveRAG backend memory/retrieval system.",
   "directories": {
     "test": "test"
   },
@@ -29,7 +29,14 @@
     "type": "git",
     "url": "git+https://github.com/ictin/openclaw-cognitiverag-memory.git"
   },
-  "keywords": [],
+  "keywords": [
+    "openclaw",
+    "cognitiverag",
+    "rag",
+    "plugin",
+    "context-engine",
+    "integration-testing"
+  ],
   "author": "",
   "license": "ISC",
   "bugs": {
