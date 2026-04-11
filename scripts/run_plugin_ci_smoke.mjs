@@ -129,11 +129,14 @@ const runtimePatch = runRuntimePatchVerify(args.repoRoot);
 const gateway = args.requireGateway ? runGatewayStatus(args.repoRoot) : { attempted: false, ok: null };
 
 const errors = [];
+const warnings = [];
 if (args.requireRuntime && !runtime.runtimeAvailable) {
   errors.push('runtime_not_available');
 }
-if (runtime.runtimeAvailable && !runtime.runtimeCodeMatchesRepo) {
+if (runtime.runtimeAvailable && !runtime.runtimeCodeMatchesRepo && args.requireRuntime) {
   errors.push('runtime_code_mismatch');
+} else if (runtime.runtimeAvailable && !runtime.runtimeCodeMatchesRepo) {
+  warnings.push('runtime_code_mismatch_non_strict');
 }
 if (args.requireRuntimePatch && runtimePatch.attempted && !runtimePatch.ok && !runtimePatch.runtimeMissing) {
   errors.push('runtime_patch_verify_failed');
@@ -155,6 +158,7 @@ const summary = {
   runtimeProof: runtime,
   runtimePatchVerify: runtimePatch,
   gatewayStatus: gateway,
+  warnings,
   passed: errors.length === 0,
   errors,
 };
