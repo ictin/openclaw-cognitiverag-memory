@@ -52,3 +52,8 @@ Always validate in this order:
 - Never mark READY without proof from tests/artifacts.
 - If safeguards are heuristic/provisional, state that explicitly.
 - Prefer explicit NOT READY over optimistic claims.
+
+## 9) Signoff Integrity Rule
+
+- Do not call signoff from partial reruns alone.
+- For grouped/runtime closure stories, require final closure artifacts for closure claims.

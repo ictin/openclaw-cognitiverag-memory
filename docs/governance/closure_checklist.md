@@ -33,6 +33,7 @@ Use this checklist before final signoff.
 ## E. Artifacts + Reporting
 
 - [ ] Required closure/report artifacts exist.
+- [ ] For grouped/live closure work, final closure artifacts exist (JSON + markdown), not only targeted reruns.
 - [ ] Artifacts use stable key names (machine-readable shape).
 - [ ] Failures are surfaced explicitly (not silently swallowed).
 - [ ] Final report includes exact commands and exact results.
