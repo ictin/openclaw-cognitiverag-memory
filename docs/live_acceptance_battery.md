@@ -21,6 +21,12 @@ npm run test:live-acceptance:closure
 npm run test:live-acceptance:report
 ```
 
+For CI-safe smoke/runtime-path proof without requiring live gateway state:
+
+```bash
+node scripts/run_plugin_ci_smoke.mjs --output ci_artifacts/plugin_ci_smoke_summary.json
+```
+
 `test:live-acceptance:closure` performs:
 - one monolithic full-battery attempt
 - automatic fallback to grouped resumable closure batches when gateway churn blocks monolithic completion

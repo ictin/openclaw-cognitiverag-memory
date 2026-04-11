@@ -35,6 +35,12 @@ jobs:
       - name: Run full test
         run: npm test | tee ci_artifacts/test-full.log
 
+      - name: Run plugin CI smoke wrapper
+        run: node scripts/run_plugin_ci_smoke.mjs --output ci_artifacts/plugin_ci_smoke_summary.json | tee ci_artifacts/plugin-ci-smoke.log
+
+      - name: Run Epic C4 validation bundle (dry-run shape check)
+        run: node scripts/run_epic_c4_validation_bundle.mjs --dry-run --output-dir ci_artifacts/epic_c4_validation | tee ci_artifacts/epic-c4-validation.log
+
       - name: Upload CI artifacts
         if: always()
         uses: actions/upload-artifact@v4
