@@ -2326,9 +2326,221 @@ export default function register(api: any) {
     userQuery: string,
     backendExplanation: ContractValidation,
   ): Promise<NaturalAnswerDraft | null> => {
+    const query = normalizeNaturalUserQuery(userQuery);
+    if (!query) return null;
+
+    // Gateway sessions.send text can bypass command-registration dispatch.
+    // Keep read-only CRAG slash commands truthful by handling them here too.
+    if (/^\/crag_status\b/i.test(query)) {
+      const current = await readHealthState();
+      const slot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
+      const text = [
+        'CognitiveRAG Status',
+        `- contextEngine slot: ${slot}`,
+        '- plugin loaded: yes',
+        `- runtime entry path: ${runtimeEntryPath}`,
+        `- runtime plugin root: ${pluginRoot}`,
+        `- backend reachable: ${current?.backendReachable ? 'yes' : 'no'}`,
+        '- backend ownership: canonical intelligence layer',
+        `- mode: ${current?.mode ?? 'unknown'}`,
+        `- last success: ${current?.lastSuccessAt ?? 'never'}`,
+        `- last failure: ${current?.lastFailAt ?? 'never'}`,
+        `- last error: ${current?.lastError ?? 'none'}`,
+        `- consecutive failures: ${current?.consecutiveFailures ?? 0}`,
+        `- rollback recommended: ${current?.rollbackRecommended ? 'yes' : 'no'}`,
+        `- rollback reason: ${current?.rollbackReason ?? 'none'}`,
+        `- rollback ready: ${current?.rollbackReady ? 'yes' : 'no'}`,
+        `- last rollback: ${current?.lastRollbackAt ?? 'never'}`,
+        `- online lane status: ${current?.onlineLaneStatus ?? 'unknown'}`,
+        `- online source classes: ${Array.isArray(current?.onlineSourceClasses) && current.onlineSourceClasses.length ? current.onlineSourceClasses.join(', ') : 'none'}`,
+        `- online lane last checked: ${current?.onlineLaneLastCheckedAt ?? 'never'}`,
+        `- online lane last error: ${current?.onlineLaneLastError ?? 'none'}`,
+        `- fallback memory mirror active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
+        '- markdown mirrors role: support/export/debug (not canonical intelligence)',
+      ].join('\n');
+      return {
+        intent: 'architecture',
+        text,
+        sourceBasis: ['slash_command:/crag_status', 'runtime_status_snapshot'],
+      };
+    }
+
+    if (/^\/crag_explain_memory\b/i.test(query)) {
+      const current = await readHealthState();
+      const text = buildCragExplainMemoryText({
+        slot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
+        fallbackMirrorActive: !!current?.fallbackMemoryMirrorActive,
+        explanation: backendExplanation.ok ? backendExplanation : { ok: false, error: 'backend_unreachable' as const },
+        onlineLaneStatus: current?.onlineLaneStatus ?? 'unknown',
+        runtimeEntryPath,
+        runtimePluginRoot: pluginRoot,
+        discoveryPlan: null,
+        discovery: null,
+      });
+      return {
+        intent: 'architecture',
+        text,
+        sourceBasis: ['slash_command:/crag_explain_memory', 'runtime_architecture_contract'],
+      };
+    }
+
+    if (/^\/crag_recall\b/i.test(query)) {
+      const rawQueryInput = query.replace(/^\/crag_recall\b/i, '').trim();
+      const allSessions = /(?:^|\s)--all-sessions(?:\s|$)/i.test(rawQueryInput);
+      const rawQuery = rawQueryInput.replace(/(?:^|\s)--all-sessions(?:\s|$)/gi, ' ').trim();
+      const parsed = parseSessionArg(rawQuery);
+      const explicitSessionId = parsed.explicitSessionId;
+      const recallQuery = parsed.query;
+      if (!recallQuery) {
+        return {
+          intent: 'chat_recall',
+          text: 'Usage: /crag_recall [--session-id <id>] <query>',
+          sourceBasis: ['slash_command_usage'],
+        };
+      }
+      const resolved = resolveCtxSession({ sessionId, sessionKey: null });
+      const sessionIdSource: 'explicit' | 'ctx' | 'mapped' | 'lastObserved' | 'missing' = explicitSessionId
+        ? 'explicit'
+        : ((resolved.source as any) ?? 'missing');
+      const resolvedSessionId = explicitSessionId || resolved.sessionId;
+
+      const backendHits = resolvedSessionId && !allSessions ? await collectBackendRecallHits(resolvedSessionId, recallQuery) : [];
+      const localSessionIds = allSessions ? await listKnownSessionIds() : resolvedSessionId ? [resolvedSessionId] : [];
+      const localHits: RecallHit[] = [];
+      for (const localSessionId of localSessionIds) {
+        const hits = await collectLocalRecallHits(localSessionId, recallQuery, true);
+        for (const hit of hits) {
+          localHits.push(hit);
+          if (localHits.length >= 8) break;
+        }
+        if (localHits.length >= 8) break;
+      }
+      const largeFileHits = await collectLargeFileRecallHits(recallQuery, 8);
+      const corpusHits = await collectCorpusRecallHits(recallQuery, 8);
+      const mirrorHits = await collectMirrorRecallHits(recallQuery);
+      const combinedRaw = [...backendHits, ...localHits, ...largeFileHits, ...corpusHits, ...mirrorHits];
+      const { ranked, intent: rankingIntent } = rankRecallHits(recallQuery, combinedRaw);
+      const combined = ranked.slice(0, 8);
+      const winner = combined[0] ?? null;
+      const fallbackSourceSet = Array.from(new Set(combined.slice(1).map((row) => row.hit.source)));
+      const lines = [
+        'CognitiveRAG Recall',
+        `- query: ${recallQuery}`,
+        `- ranking intent: ${rankingIntent}`,
+        `- all sessions: ${allSessions ? 'yes' : 'no'}`,
+        `- sessionId: ${resolvedSessionId || 'unknown'}`,
+        `- sessionId source: ${sessionIdSource}`,
+        `- backend hits: ${backendHits.length}`,
+        `- local lossless hits: ${localHits.length}`,
+        `- large file hits: ${largeFileHits.length}`,
+        `- corpus hits: ${corpusHits.length}`,
+        `- fallback mirror hits: ${mirrorHits.length}`,
+      ];
+      if (winner) {
+        lines.push(`- winning source: ${winner.hit.source}`);
+        lines.push(`- winning reason: ${winner.reasons.join(', ')}`);
+        lines.push(`- fallback sources: ${fallbackSourceSet.length ? fallbackSourceSet.join(', ') : 'none'}`);
+        lines.push(`- winning provenance: ${winner.hit.corpusPath ?? winner.hit.sessionId ?? winner.hit.chunkId ?? 'text-only'}`);
+      } else {
+        lines.push('- winning source: none');
+      }
+      if (!combined.length) {
+        lines.push('- hits: none');
+      } else {
+        lines.push('- hits:');
+        for (const row of combined) lines.push(`  - [${row.hit.source}] score=${row.score} ${row.hit.text}`);
+      }
+      return {
+        intent: 'chat_recall',
+        text: lines.join('\n'),
+        sourceBasis: ['slash_command:/crag_recall', winner ? `winning_source:${winner.hit.source}` : 'winning_source:none'],
+      };
+    }
+
+    if (/^\/crag_session_quote\b/i.test(query)) {
+      const rawInput = query.replace(/^\/crag_session_quote\b/i, '').trim();
+      const exactMode = /(?:^|\s)--exact(?:\s|$)/i.test(rawInput);
+      const cleaned = rawInput.replace(/(?:^|\s)--exact(?:\s|$)/gi, ' ').trim();
+      const parsed = parseSessionArg(cleaned);
+      const target = String(parsed.query ?? '').trim();
+      if (!target) {
+        return {
+          intent: 'chat_recall',
+          text: 'Usage: /crag_session_quote [--session-id <id>] [--exact] <query|seq:<n>|seq:<start>-<end>>',
+          sourceBasis: ['slash_command_usage'],
+        };
+      }
+      const resolved = resolveCtxSession({ sessionId, sessionKey: null });
+      const resolvedSessionId = parsed.explicitSessionId || resolved.sessionId;
+      if (!resolvedSessionId) {
+        return {
+          intent: 'chat_recall',
+          text: 'No session id available yet. Provide --session-id <id>.',
+          sourceBasis: ['slash_command_missing_session'],
+        };
+      }
+      const entries = await readRawEntries(resolvedSessionId);
+      const seqRange = target.match(/^seq:(\d+)(?:-(\d+))?$/i);
+      const lines: string[] = [
+        'CognitiveRAG Session Quote',
+        `- sessionId: ${resolvedSessionId}`,
+        `- target: ${target}`,
+        `- exact mode: ${exactMode ? 'yes' : 'no'}`,
+      ];
+      if (seqRange) {
+        const start = Number.parseInt(seqRange[1], 10);
+        const end = Number.parseInt(seqRange[2] || seqRange[1], 10);
+        const low = Math.min(start, end);
+        const high = Math.max(start, end);
+        const windowEntries = entries.filter((entry) => entry.seq >= low && entry.seq <= high).slice(0, 40);
+        lines.push('- retrieval mode: seq-range');
+        lines.push(`- seq range: ${low}-${high}`);
+        lines.push('- source: lossless_session_raw');
+        lines.push(`- hits: ${windowEntries.length}`);
+        if (!windowEntries.length) lines.push('- none');
+        else {
+          lines.push('- quotes:');
+          for (const entry of windowEntries) lines.push(`  - seq ${entry.seq} [${entry.sender}] ${buildSnippet(entry.text, 320)}`);
+        }
+        return {
+          intent: 'chat_recall',
+          text: lines.join('\n'),
+          sourceBasis: ['slash_command:/crag_session_quote', 'source:lossless_session_raw'],
+        };
+      }
+      const quote = await collectSessionQuoteHits(resolvedSessionId, target, exactMode, 8);
+      lines.push('- retrieval mode: query');
+      lines.push(`- raw exact/near hits: ${quote.raw.length}`);
+      lines.push(`- compact summary hits: ${quote.compact.length}`);
+      lines.push(`- expanded raw evidence entries: ${quote.expandedFromCompact.length}`);
+      if (quote.raw.length) {
+        lines.push('- exact raw hits:');
+        for (const hit of quote.raw.slice(0, 8)) {
+          lines.push(`  - [${hit.source}] seq ${hit.seqStart}-${hit.seqEnd} score=${hit.score} exact=${hit.exact ? 'yes' : 'no'} ${hit.text}`);
+        }
+      }
+      if (quote.compact.length) {
+        lines.push('- compact hits:');
+        for (const hit of quote.compact.slice(0, 6)) {
+          lines.push(`  - [${hit.source}] ${hit.chunkId} seq ${hit.seqStart}-${hit.seqEnd} score=${hit.score} exact=${hit.exact ? 'yes' : 'no'} ${hit.text}`);
+        }
+      }
+      if (!quote.raw.length && !quote.compact.length) lines.push('- no matching session material found');
+      else if (quote.expandedFromCompact.length) {
+        lines.push('- expanded raw evidence:');
+        for (const entry of quote.expandedFromCompact.slice(0, 8)) {
+          lines.push(`  - seq ${entry.seq} [${entry.sender}] ${buildSnippet(entry.text, 240)}`);
+        }
+      }
+      return {
+        intent: 'chat_recall',
+        text: lines.join('\n'),
+        sourceBasis: ['slash_command:/crag_session_quote', quote.raw.length ? 'source:lossless_session_raw' : 'source:compacted_or_none'],
+      };
+    }
+
     const intent = detectNaturalAnswerIntent(userQuery);
     if (intent === 'none') return null;
-    const query = normalizeNaturalUserQuery(userQuery);
     const isLowValueMemoryNoise = (line: string): boolean => {
       const text = String(line ?? '').toLowerCase();
       if (!text.trim()) return true;
@@ -4195,6 +4407,7 @@ export default function register(api: any) {
         }
         let naturalRoutingMessage: any = null;
         let naturalIntent: NaturalAnswerIntent = 'none';
+        let deterministicIntent: NaturalAnswerIntent = 'none';
         let naturalDraft: NaturalAnswerDraft | null = null;
         let deterministicComposerActive = false;
         let localCompactionActive = false;
@@ -4282,33 +4495,38 @@ export default function register(api: any) {
           naturalIntent = detectNaturalAnswerIntent(latestUserQuery);
           const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
           naturalDraft = await buildNaturalAnswerDraft(sessionId, latestUserQuery, assemblyRes.explanation);
+          const slashCommandDraftActive =
+            !!naturalDraft &&
+            Array.isArray(naturalDraft.sourceBasis) &&
+            naturalDraft.sourceBasis.some((line) => /^slash_command:\/crag_/i.test(String(line ?? '')));
+          deterministicIntent = naturalIntent === 'none' && slashCommandDraftActive ? 'architecture' : naturalIntent;
+          deterministicComposerActive =
+            !!naturalDraft &&
+            (
+              deterministicIntent === 'memory_summary' ||
+              deterministicIntent === 'memory_topic' ||
+              deterministicIntent === 'web' ||
+              deterministicIntent === 'corpus' ||
+              deterministicIntent === 'architecture' ||
+              deterministicIntent === 'skill_generation' ||
+              deterministicIntent === 'skill_explain' ||
+              deterministicIntent === 'skill_evaluation'
+            );
           if (naturalRoutingPrompt) {
-            deterministicComposerActive =
-              !!naturalDraft &&
-              (
-                naturalIntent === 'memory_summary' ||
-                naturalIntent === 'memory_topic' ||
-                naturalIntent === 'web' ||
-                naturalIntent === 'corpus' ||
-                naturalIntent === 'architecture' ||
-                naturalIntent === 'skill_generation' ||
-                naturalIntent === 'skill_explain' ||
-                naturalIntent === 'skill_evaluation'
-              );
             const hardContract = deterministicComposerActive
-              ? naturalIntent === 'memory_summary'
+              ? deterministicIntent === 'memory_summary'
                 ? '\n\nDeterministic final-answer contract for memory summary:\n- Output six sections exactly: Memory stack in use (primary -> supporting); About you; Recent durable facts; Current conversation context; Books/corpus I can draw from; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Keep CRAG/session/corpus layers primary and markdown mirrors explicitly secondary.'
-                : naturalIntent === 'memory_topic'
+                : deterministicIntent === 'memory_topic'
                   ? '\n\nDeterministic final-answer contract for topic-scoped remember prompts:\n- Use only stored/retrieved evidence for "remember" claims (session/promoted/corpus/large-file).\n- If stored evidence is absent, state that clearly and separate any optional general-knowledge fallback.\n- Do not replace topic-scoped answer with generic memory-stack dump unless user explicitly asked for architecture.'
-                  : naturalIntent === 'web'
+                  : deterministicIntent === 'web'
                     ? '\n\nDeterministic final-answer contract for freshness-sensitive web prompts:\n- Prefer backend investigative/web evidence over generic model knowledge.\n- State the source class explicitly.\n- If no web evidence is selected, answer exactly with "no evidence found" and do not hallucinate a live value.'
-                  : naturalIntent === 'corpus'
+                  : deterministicIntent === 'corpus'
                     ? '\n\nDeterministic final-answer contract for corpus overview:\n- If retrieved corpus excerpts exist, summarize from those excerpts directly.\n- Do not return title/path-only fallback when excerpt evidence is present.\n- End with a short Source line using path/title from winning excerpt.'
-                  : naturalIntent === 'skill_generation'
-                    ? '\n\nDeterministic final-answer contract for skill generation:\n- Use backend skill pack artifacts when available.\n- Include explicit artifact usage notes (principles/templates/examples/rubric/anti-pattern/workflow).\n- Record execution memory write result truthfully.'
-                    : naturalIntent === 'skill_explain'
+                    : deterministicIntent === 'skill_generation'
+                      ? '\n\nDeterministic final-answer contract for skill generation:\n- Use backend skill pack artifacts when available.\n- Include explicit artifact usage notes (principles/templates/examples/rubric/anti-pattern/workflow).\n- Record execution memory write result truthfully.'
+                    : deterministicIntent === 'skill_explain'
                       ? '\n\nDeterministic final-answer contract for skill explanation:\n- Explain latest skill-run artifact usage by type.\n- If no recent skill run exists, state that clearly.'
-                      : naturalIntent === 'skill_evaluation'
+                      : deterministicIntent === 'skill_evaluation'
                         ? '\n\nDeterministic final-answer contract for skill evaluation:\n- Provide criterion-level rubric scores.\n- Provide overall pass/fail and anti-pattern hits.\n- Record evaluation memory write result truthfully.'
                   : '\n\nDeterministic final-answer contract for architecture/source questions:\n- Answer from layered memory truth contract directly.\n- Keep CRAG/lossless/corpus layers explicit and markdown mirrors secondary.\n- Do not emit provider-error or empty fallback text for this intent.'
               : '';
@@ -4349,6 +4567,7 @@ export default function register(api: any) {
               hasSystemPromptAddition: !!systemPromptAddition,
               systemPromptAdditionChars: (systemPromptAddition ?? '').length,
               naturalIntent,
+              deterministicIntent,
               hasNaturalDraft: !!naturalDraft,
               naturalDraftChars: (naturalDraft?.text ?? '').length,
               deterministicComposerActive,
@@ -4358,13 +4577,13 @@ export default function register(api: any) {
         );
 
         const boundedMessages = Array.isArray(messages) ? messages.slice(-20) : [];
-        messages = pruneMessagesForDeterministicIntent(boundedMessages, naturalIntent);
+        messages = pruneMessagesForDeterministicIntent(boundedMessages, deterministicIntent);
         if (deterministicComposerActive && naturalDraft) {
           const latestUserQueryForDeterministic =
             extractPromptTextFromAssemblePrompt((params as any)?.prompt) ||
             latestUserQueryFromMessages(inputMessages);
           const hardShortCircuit = buildHardDeterministicMessages(
-            naturalIntent,
+            deterministicIntent,
             latestUserQueryForDeterministic,
             naturalDraft,
           );
@@ -4375,7 +4594,7 @@ export default function register(api: any) {
           } else {
             messages = enforceDeterministicDraftOnLastUser(
               messages,
-              naturalIntent,
+              deterministicIntent,
               latestUserQueryForDeterministic,
               naturalDraft,
             );
@@ -4403,6 +4622,7 @@ export default function register(api: any) {
             estimatedTokens,
             totalTokens,
             naturalIntent,
+            deterministicIntent,
             hasNaturalDraft: !!naturalDraft,
             naturalDraftChars: (naturalDraft?.text ?? '').length,
             deterministicComposerActive,

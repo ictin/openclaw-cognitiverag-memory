@@ -114,6 +114,59 @@ function callGateway(method, params) {
   return parsed;
 }
 
+function assistantMessageCount(payload) {
+  return (payload?.messages || []).filter((m) => m?.role === 'assistant').length;
+}
+
+function maxAssistantSeq(payload) {
+  const seqs = (payload?.messages || [])
+    .filter((m) => m?.role === 'assistant')
+    .map((m) => Number(m?.__openclaw?.seq ?? 0))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return seqs.length ? Math.max(...seqs) : 0;
+}
+
+function hasAssistantTextAfterSeq(payload, minSeqExclusive) {
+  const messages = payload?.messages || [];
+  return messages.some((msg) => {
+    if (msg?.role !== 'assistant') return false;
+    const seq = Number(msg?.__openclaw?.seq ?? 0);
+    if (!(Number.isFinite(seq) && seq > Number(minSeqExclusive))) return false;
+    const parts = Array.isArray(msg?.content) ? msg.content : [];
+    return parts.some((part) => {
+      const text = String(part?.text ?? '').trim();
+      return !!text;
+    });
+  });
+}
+
+function sendAndWaitForAssistant(key, message, options = {}) {
+  const timeoutMs = Number(options.timeoutMs ?? 90000);
+  const pollMs = Number(options.pollMs ?? 1500);
+  const before = callGateway('sessions.get', { key });
+  const beforeAssistantCount = assistantMessageCount(before);
+  const sendResult = callGateway('sessions.send', { key, message });
+  const sentSeq = Number(sendResult?.messageSeq ?? 0);
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    sleepMs(pollMs);
+    const snapshot = callGateway('sessions.get', { key });
+    const assistantSeq = maxAssistantSeq(snapshot);
+    if (sentSeq > 0) {
+      if (assistantSeq > sentSeq && hasAssistantTextAfterSeq(snapshot, sentSeq)) {
+        return { sendResult, snapshot };
+      }
+      continue;
+    }
+    if (assistantMessageCount(snapshot) > beforeAssistantCount) {
+      return { sendResult, snapshot };
+    }
+  }
+  throw new Error(
+    `sessions.send completion timeout after ${timeoutMs}ms (key=${key}, message=${String(message).slice(0, 140)})`,
+  );
+}
+
 function pass(name, ok, details = {}, artifacts = []) {
   return { name, ok: !!ok, details, artifacts };
 }
@@ -143,65 +196,37 @@ try {
   const benchmarkSessionId = String(created?.sessionId ?? '');
   summary.benchmarkSessionId = benchmarkSessionId;
 
-  callGateway('sessions.send', { key: benchmarkKey, message: 'Reply with exactly: MEMORY-BENCHMARK-OK' });
-  callGateway('sessions.send', { key: benchmarkKey, message: '/crag_status' });
-  callGateway('sessions.send', { key: benchmarkKey, message: '/crag_explain_memory' });
-  callGateway('sessions.send', {
-    key: benchmarkKey,
-    message: '/crag_corpus_ingest --root /mnt/g/@Cursuri --max-files 4',
+  sendAndWaitForAssistant(benchmarkKey, 'Reply with exactly: MEMORY-BENCHMARK-OK');
+  sendAndWaitForAssistant(benchmarkKey, '/crag_status');
+  sendAndWaitForAssistant(benchmarkKey, '/crag_explain_memory');
+  sendAndWaitForAssistant(benchmarkKey, '/crag_corpus_ingest --root /mnt/g/@Cursuri --max-files 4', {
+    timeoutMs: 120000,
   });
 
   if (benchmarkSessionId) {
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `Remember this benchmark token exactly: ${benchmarkToken}`,
-    });
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_recall --session-id ${benchmarkSessionId} in this session what did we say about ${benchmarkToken}`,
-    });
+    sendAndWaitForAssistant(benchmarkKey, `Remember this benchmark token exactly: ${benchmarkToken}`);
+    sendAndWaitForAssistant(
+      benchmarkKey,
+      `/crag_recall --session-id ${benchmarkSessionId} in this session what did we say about ${benchmarkToken}`,
+    );
   }
 
   const targetSessionId = longest.sessionId || benchmarkSessionId;
   if (targetSessionId) {
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_session_describe --session-id ${targetSessionId} ${oldAnchorToken}`,
-    });
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_session_quote --session-id ${targetSessionId} --exact ${oldAnchorToken}`,
-    });
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_session_quote --session-id ${targetSessionId} what was the lossless live token in this session`,
-    });
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_session_expand --session-id ${targetSessionId} 3`,
-    });
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_session_export --session-id ${targetSessionId} benchmark-export`,
-    });
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_recall --session-id ${targetSessionId} from book ${bookExactQuery}`,
-    });
+    sendAndWaitForAssistant(benchmarkKey, `/crag_session_describe --session-id ${targetSessionId} ${oldAnchorToken}`);
+    sendAndWaitForAssistant(benchmarkKey, `/crag_session_quote --session-id ${targetSessionId} --exact ${oldAnchorToken}`);
+    sendAndWaitForAssistant(
+      benchmarkKey,
+      `/crag_session_quote --session-id ${targetSessionId} what was the lossless live token in this session`,
+    );
+    sendAndWaitForAssistant(benchmarkKey, `/crag_session_expand --session-id ${targetSessionId} 3`);
+    sendAndWaitForAssistant(benchmarkKey, `/crag_session_export --session-id ${targetSessionId} benchmark-export`);
+    sendAndWaitForAssistant(benchmarkKey, `/crag_recall --session-id ${targetSessionId} from book ${bookExactQuery}`);
   }
 
-  callGateway('sessions.send', {
-    key: benchmarkKey,
-    message: `/crag_large_search ${bookNearQuery}`,
-  });
-  callGateway('sessions.send', {
-    key: benchmarkKey,
-    message: `/crag_large_search ${bookSemanticQuery}`,
-  });
-  callGateway('sessions.send', {
-    key: benchmarkKey,
-    message: `/crag_recall --all-sessions in this session what did we say about ${crossToken}`,
-  });
+  sendAndWaitForAssistant(benchmarkKey, `/crag_large_search ${bookNearQuery}`);
+  sendAndWaitForAssistant(benchmarkKey, `/crag_large_search ${bookSemanticQuery}`);
+  sendAndWaitForAssistant(benchmarkKey, `/crag_recall --all-sessions in this session what did we say about ${crossToken}`);
 
   const preRestart = callGateway('sessions.get', { key: benchmarkKey });
   fsSync.writeFileSync(path.join(benchDir, 'benchmark_get_pre_restart.json'), JSON.stringify(preRestart, null, 2));
@@ -210,14 +235,8 @@ try {
 
   callGateway('status', {});
   if (targetSessionId) {
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_session_quote --session-id ${targetSessionId} --exact ${oldAnchorToken}`,
-    });
-    callGateway('sessions.send', {
-      key: benchmarkKey,
-      message: `/crag_recall --session-id ${targetSessionId} from book ${bookExactQuery}`,
-    });
+    sendAndWaitForAssistant(benchmarkKey, `/crag_session_quote --session-id ${targetSessionId} --exact ${oldAnchorToken}`);
+    sendAndWaitForAssistant(benchmarkKey, `/crag_recall --session-id ${targetSessionId} from book ${bookExactQuery}`);
   }
   const postRestart = callGateway('sessions.get', { key: benchmarkKey });
   fsSync.writeFileSync(path.join(benchDir, 'benchmark_get_post_restart.json'), JSON.stringify(postRestart, null, 2));
