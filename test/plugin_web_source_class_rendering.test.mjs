@@ -4,6 +4,7 @@ import { validateSelectionExplanation } from '../src/validators/contractValidato
 
 const explanation = validateSelectionExplanation({
   intent_family: 'corpus_overview',
+  retrieval_mode: 'full_memory',
   total_budget: 2048,
   reserved_tokens: 320,
   selected_blocks: [
@@ -21,5 +22,11 @@ const explanation = validateSelectionExplanation({
 assert.equal(explanation.ok, true, 'selection explanation should validate');
 const text = buildBackendSelectorPrompt(explanation);
 assert.match(text, /source classes:\s*corpus, large-file, web evidence, web promoted/i);
+assert.match(text, /policy retrieval mode:\s*full_memory \(source=backend\)/i);
+assert.match(text, /normalized memory class mix:/i);
+assert.match(text, /corpus_memory:\s*selected=1,\s*lane_tokens=120/i);
+assert.match(text, /large_file_memory:\s*selected=1,\s*lane_tokens=90/i);
+assert.match(text, /web_evidence_memory:\s*selected=1,\s*lane_tokens=170/i);
+assert.match(text, /web_promoted_memory:\s*selected=1,\s*lane_tokens=170/i);
 
 console.log('plugin web source class rendering test passed');

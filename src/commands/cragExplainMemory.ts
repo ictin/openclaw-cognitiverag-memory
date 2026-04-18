@@ -1,4 +1,11 @@
-import { deriveSourceClasses, type ContractValidation, type OnlineLaneStatus } from '../validators/contractValidator.js';
+import {
+  deriveNormalizedMemoryClassMix,
+  derivePolicyRetrievalMode,
+  deriveSourceClasses,
+  type ContractValidation,
+  type OnlineLaneStatus,
+} from '../validators/contractValidator.js';
+import { renderCanonicalTaxonomyRegistryLines, renderTaxonomyRegistryHeader } from '../contracts/memoryTaxonomy.js';
 
 export function buildCragExplainMemoryText(args: {
   slot: string;
@@ -13,6 +20,8 @@ export function buildCragExplainMemoryText(args: {
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     !!value && typeof value === 'object' && !Array.isArray(value);
   const sourceClasses = deriveSourceClasses(args.explanation);
+  const retrievalMode = derivePolicyRetrievalMode(args.explanation);
+  const classMix = deriveNormalizedMemoryClassMix(args.explanation);
   const lines: string[] = [
     'CognitiveRAG Memory Architecture',
     `- active context engine slot: ${args.slot}`,
@@ -20,6 +29,7 @@ export function buildCragExplainMemoryText(args: {
     `- runtime entry path: ${args.runtimeEntryPath ?? 'unknown'}`,
     `- runtime plugin root: ${args.runtimePluginRoot ?? 'unknown'}`,
     '- backend ownership: canonical memory/retrieval/discovery intelligence',
+    renderTaxonomyRegistryHeader(),
     `- online lane status: ${args.onlineLaneStatus ?? 'unknown'}`,
     '- backend/session memory: primary CRAG context layer',
     '- backend promoted memory: durable normalized reusable memory',
@@ -32,6 +42,7 @@ export function buildCragExplainMemoryText(args: {
     '- large-file layer: bounded excerpt retrieval with locators',
     `- fallback mirror MEMORY.md active: ${args.fallbackMirrorActive ? 'yes' : 'no'}`,
     '- mirrors are supporting/export/debug layers, not canonical intelligence',
+    ...renderCanonicalTaxonomyRegistryLines(),
   ];
 
   if (args.explanation.ok) {
@@ -49,11 +60,24 @@ export function buildCragExplainMemoryText(args: {
     lines.push(
       `- backend-derived source classes: ${sourceClasses.length ? sourceClasses.join(', ') : 'none surfaced in this probe'}`,
     );
+    lines.push(`- policy retrieval mode: ${retrievalMode.mode} (source=${retrievalMode.source})`);
+    lines.push('- normalized retrieval memory-class metadata:');
+    if (classMix.length) {
+      for (const entry of classMix) {
+        lines.push(
+          `  - ${entry.layerId}: selected=${entry.selectedBlockCount}, lane_tokens=${entry.laneTokens}, lanes=${entry.observedLanes.join('|') || 'none'}, types=${entry.observedMemoryTypes.join('|') || 'none'}`,
+        );
+      }
+    } else {
+      lines.push('  - none');
+    }
     lines.push(`- selector reorder strategy: ${ex.reorder_strategy}`);
   } else {
     lines.push('- backend selector explanation: unavailable (fail-open)');
     lines.push(`- explanation validation error: ${args.explanation.error}`);
     lines.push('- backend-derived source classes: unavailable');
+    lines.push('- policy retrieval mode: unknown (source=unknown)');
+    lines.push('- normalized retrieval memory-class metadata: unavailable');
   }
 
   const discoveryPlan = isRecord(args.discoveryPlan) ? args.discoveryPlan : null;

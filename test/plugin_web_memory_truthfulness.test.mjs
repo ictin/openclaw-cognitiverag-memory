@@ -4,6 +4,7 @@ import { validateSelectionExplanation } from '../src/validators/contractValidato
 
 const explanation = validateSelectionExplanation({
   intent_family: 'architecture_explanation',
+  retrieval_mode: 'full_memory',
   total_budget: 512,
   reserved_tokens: 128,
   selected_blocks: [
@@ -28,6 +29,11 @@ const text = buildCragExplainMemoryText({
 
 assert.match(text, /online lane status:\s*enabled/i);
 assert.match(text, /backend-derived source classes:\s*corpus, web evidence, web promoted/i);
+assert.match(text, /policy retrieval mode:\s*full_memory \(source=backend\)/i);
+assert.match(text, /normalized retrieval memory-class metadata:/i);
+assert.match(text, /corpus_memory:\s*selected=1,\s*lane_tokens=44/i);
+assert.match(text, /web_evidence_memory:\s*selected=1,\s*lane_tokens=120/i);
+assert.match(text, /web_promoted_memory:\s*selected=1,\s*lane_tokens=120/i);
 assert.match(text, /backend ownership:\s*canonical memory\/retrieval\/discovery intelligence/i);
 assert.match(text, /web evidence:\s*backend-cached raw web evidence/i);
 assert.match(text, /web promoted:\s*backend-promoted reusable web-backed facts/i);

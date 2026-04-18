@@ -17,6 +17,7 @@ export type DroppedBlock = {
 
 export type SelectionExplanation = {
   intent_family: string;
+  retrieval_mode?: string;
   total_budget: number;
   reserved_tokens: number;
   selected_blocks: SelectedBlock[];
@@ -31,6 +32,29 @@ export type ContractValidation =
   | { ok: false; error: string };
 
 export type SourceClass = 'corpus' | 'large-file' | 'web evidence' | 'web promoted';
+export type PolicyRetrievalMode = 'documents_only' | 'regression_test' | 'task_memory' | 'full_memory' | 'unknown';
+export type PolicyModeSource = 'backend' | 'inferred' | 'unknown';
+export type NormalizedMemoryLayerId =
+  | 'working_memory'
+  | 'episodic_memory'
+  | 'semantic_memory'
+  | 'procedural_memory'
+  | 'task_memory'
+  | 'profile_memory'
+  | 'reasoning_memory'
+  | 'corpus_memory'
+  | 'large_file_memory'
+  | 'web_evidence_memory'
+  | 'web_promoted_memory'
+  | 'mirror_memory';
+
+export type NormalizedMemoryClassEntry = {
+  layerId: NormalizedMemoryLayerId;
+  selectedBlockCount: number;
+  laneTokens: number;
+  observedLanes: string[];
+  observedMemoryTypes: string[];
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -82,6 +106,7 @@ export function validateSelectionExplanation(input: unknown): ContractValidation
 
   const value: SelectionExplanation = {
     intent_family: input.intent_family.trim(),
+    retrieval_mode: typeof input.retrieval_mode === 'string' ? input.retrieval_mode.trim() : undefined,
     total_budget: Math.max(0, Math.floor(input.total_budget)),
     reserved_tokens: Math.max(0, Math.floor(input.reserved_tokens)),
     selected_blocks: selectedBlocks as SelectedBlock[],
@@ -155,4 +180,126 @@ export function deriveOnlineLaneStatus(explanation: ContractValidation): OnlineL
   if (!explanation.ok) return 'unknown';
   const classes = deriveSourceClasses(explanation);
   return classes.some((entry) => entry === 'web evidence' || entry === 'web promoted') ? 'enabled' : 'disabled';
+}
+
+function normalizePolicyRetrievalModeCandidate(value: unknown): PolicyRetrievalMode {
+  const normalized = String(value ?? '')
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .trim();
+  if (normalized === 'documents_only') return 'documents_only';
+  if (normalized === 'regression_test') return 'regression_test';
+  if (normalized === 'task_memory') return 'task_memory';
+  if (normalized === 'full_memory') return 'full_memory';
+  return 'unknown';
+}
+
+function inferPolicyRetrievalModeFromIntent(intentFamilyRaw: unknown): PolicyRetrievalMode {
+  const intentFamily = String(intentFamilyRaw ?? '')
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .trim();
+  if (!intentFamily) return 'unknown';
+  if (intentFamily.includes('task') || intentFamily.includes('workflow') || intentFamily.includes('state')) return 'task_memory';
+  if (intentFamily.includes('price') || intentFamily.includes('web') || intentFamily.includes('investigative'))
+    return 'full_memory';
+  if (
+    intentFamily.includes('architecture') ||
+    intentFamily.includes('corpus') ||
+    intentFamily.includes('document') ||
+    intentFamily.includes('quote') ||
+    intentFamily.includes('recall')
+  ) {
+    return 'documents_only';
+  }
+  return 'unknown';
+}
+
+export function derivePolicyRetrievalMode(
+  explanation: ContractValidation,
+): { mode: PolicyRetrievalMode; source: PolicyModeSource } {
+  if (!explanation.ok) return { mode: 'unknown', source: 'unknown' };
+  const backendMode = normalizePolicyRetrievalModeCandidate(explanation.value.retrieval_mode);
+  if (backendMode !== 'unknown') return { mode: backendMode, source: 'backend' };
+  const inferredMode = inferPolicyRetrievalModeFromIntent(explanation.value.intent_family);
+  return {
+    mode: inferredMode,
+    source: inferredMode === 'unknown' ? 'unknown' : 'inferred',
+  };
+}
+
+function classifyMemoryLayer(memoryTypeRaw: unknown, laneRaw: unknown): NormalizedMemoryLayerId {
+  const memoryType = normalizeMemoryType(memoryTypeRaw);
+  const lane = normalizeLane(laneRaw);
+  if (memoryType.includes('web_promoted')) return 'web_promoted_memory';
+  if (memoryType.includes('web_evidence') || lane === 'web') return 'web_evidence_memory';
+  if (memoryType.includes('large_file') || lane === 'large_file') return 'large_file_memory';
+  if (memoryType.includes('corpus') || lane === 'corpus') return 'corpus_memory';
+  if (memoryType.includes('task') || lane === 'task') return 'task_memory';
+  if (memoryType.includes('profile') || lane === 'profile') return 'profile_memory';
+  if (memoryType.includes('reasoning') || lane === 'reasoning') return 'reasoning_memory';
+  if (memoryType.includes('procedural') || lane === 'procedural') return 'procedural_memory';
+  if (memoryType.includes('semantic') || memoryType.includes('promoted') || lane === 'promoted') return 'semantic_memory';
+  if (memoryType.includes('episodic') || memoryType.includes('session') || lane === 'episodic') return 'episodic_memory';
+  if (memoryType.includes('mirror') || lane === 'mirror') return 'mirror_memory';
+  return 'working_memory';
+}
+
+const MEMORY_LAYER_ORDER: readonly NormalizedMemoryLayerId[] = [
+  'working_memory',
+  'episodic_memory',
+  'semantic_memory',
+  'procedural_memory',
+  'task_memory',
+  'profile_memory',
+  'reasoning_memory',
+  'corpus_memory',
+  'large_file_memory',
+  'web_evidence_memory',
+  'web_promoted_memory',
+  'mirror_memory',
+];
+
+export function deriveNormalizedMemoryClassMix(explanation: ContractValidation): NormalizedMemoryClassEntry[] {
+  if (!explanation.ok) return [];
+  const bucket = new Map<NormalizedMemoryLayerId, NormalizedMemoryClassEntry>();
+  const add = (layerId: NormalizedMemoryLayerId, laneRaw: unknown, memoryTypeRaw: unknown, laneTokens: number) => {
+    const lane = normalizeLane(laneRaw);
+    const memoryType = normalizeMemoryType(memoryTypeRaw);
+    const current = bucket.get(layerId) ?? {
+      layerId,
+      selectedBlockCount: 0,
+      laneTokens: 0,
+      observedLanes: [],
+      observedMemoryTypes: [],
+    };
+    if (lane && !current.observedLanes.includes(lane)) current.observedLanes.push(lane);
+    if (memoryType && !current.observedMemoryTypes.includes(memoryType)) current.observedMemoryTypes.push(memoryType);
+    current.selectedBlockCount += 1;
+    current.laneTokens = Math.max(current.laneTokens, laneTokens);
+    bucket.set(layerId, current);
+  };
+
+  const laneTotals = explanation.value.lane_totals || {};
+  for (const block of explanation.value.selected_blocks || []) {
+    const lane = normalizeLane(block?.lane);
+    const laneTokens = Number.isFinite(laneTotals[lane]) ? Math.max(0, Math.floor(Number(laneTotals[lane]))) : 0;
+    add(classifyMemoryLayer(block?.memory_type, block?.lane), block?.lane, block?.memory_type, laneTokens);
+  }
+  for (const [laneRaw, tokens] of Object.entries(laneTotals)) {
+    const layerId = classifyMemoryLayer('', laneRaw);
+    const laneTokens = Number.isFinite(tokens) ? Math.max(0, Math.floor(tokens)) : 0;
+    const current = bucket.get(layerId) ?? {
+      layerId,
+      selectedBlockCount: 0,
+      laneTokens: 0,
+      observedLanes: [],
+      observedMemoryTypes: [],
+    };
+    const lane = normalizeLane(laneRaw);
+    if (lane && !current.observedLanes.includes(lane)) current.observedLanes.push(lane);
+    current.laneTokens = Math.max(current.laneTokens, laneTokens);
+    bucket.set(layerId, current);
+  }
+  return MEMORY_LAYER_ORDER.map((layerId) => bucket.get(layerId)).filter((entry): entry is NormalizedMemoryClassEntry => !!entry);
 }
