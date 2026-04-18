@@ -71,6 +71,10 @@ try {
   assert.match(text, /promoted:\s*44/i);
   assert.match(text, /policy retrieval mode:\s*task_memory \(source=backend\)/i);
   assert.match(text, /normalized retrieval memory-class metadata:/i);
+  assert.match(
+    text,
+    /web class split:\s*web_evidence=selected=0,lane_tokens=0,\s*web_promoted=selected=0,lane_tokens=0,\s*collapsed_web_bucket=no/i,
+  );
   assert.match(text, /semantic_memory:\s*selected=1,\s*lane_tokens=44/i);
   assert.match(text, /task_memory:\s*selected=1,\s*lane_tokens=30/i);
   assert.match(text, /episodic_memory:\s*selected=0,\s*lane_tokens=20/i);

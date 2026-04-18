@@ -14,6 +14,8 @@ export function buildBackendSelectorPrompt(explanation: ContractValidation): str
   const sourceClasses = deriveSourceClasses(explanation);
   const retrievalMode = derivePolicyRetrievalMode(explanation);
   const classMix = deriveNormalizedMemoryClassMix(explanation);
+  const webEvidence = classMix.find((entry) => entry.layerId === 'web_evidence_memory');
+  const webPromoted = classMix.find((entry) => entry.layerId === 'web_promoted_memory');
   const lines = [
     'Backend selector explanation (authoritative):',
     `- intent_family: ${ex.intent_family}`,
@@ -31,6 +33,7 @@ export function buildBackendSelectorPrompt(explanation: ContractValidation): str
             `  - ${entry.layerId}: selected=${entry.selectedBlockCount}, lane_tokens=${entry.laneTokens}, lanes=${entry.observedLanes.join('|') || 'none'}`,
         )
       : ['  - none']),
+    `- web class split: web_evidence=${webEvidence ? `selected=${webEvidence.selectedBlockCount},lane_tokens=${webEvidence.laneTokens}` : 'selected=0,lane_tokens=0'}, web_promoted=${webPromoted ? `selected=${webPromoted.selectedBlockCount},lane_tokens=${webPromoted.laneTokens}` : 'selected=0,lane_tokens=0'}, collapsed_web_bucket=no`,
     '- lane totals:',
     ...(laneEntries.length ? laneEntries.slice(0, 8).map(([lane, tokens]) => `  - ${lane}: ${tokens}`) : ['  - none']),
   ];

@@ -31,6 +31,10 @@ assert.match(text, /online lane status:\s*enabled/i);
 assert.match(text, /backend-derived source classes:\s*corpus, web evidence, web promoted/i);
 assert.match(text, /policy retrieval mode:\s*full_memory \(source=backend\)/i);
 assert.match(text, /normalized retrieval memory-class metadata:/i);
+assert.match(
+  text,
+  /web class split:\s*web_evidence=selected=1,lane_tokens=120,\s*web_promoted=selected=1,lane_tokens=120,\s*collapsed_web_bucket=no/i,
+);
 assert.match(text, /corpus_memory:\s*selected=1,\s*lane_tokens=44/i);
 assert.match(text, /web_evidence_memory:\s*selected=1,\s*lane_tokens=120/i);
 assert.match(text, /web_promoted_memory:\s*selected=1,\s*lane_tokens=120/i);

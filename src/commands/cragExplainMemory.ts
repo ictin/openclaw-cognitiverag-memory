@@ -62,6 +62,11 @@ export function buildCragExplainMemoryText(args: {
     );
     lines.push(`- policy retrieval mode: ${retrievalMode.mode} (source=${retrievalMode.source})`);
     lines.push('- normalized retrieval memory-class metadata:');
+    const webEvidence = classMix.find((entry) => entry.layerId === 'web_evidence_memory');
+    const webPromoted = classMix.find((entry) => entry.layerId === 'web_promoted_memory');
+    lines.push(
+      `- web class split: web_evidence=${webEvidence ? `selected=${webEvidence.selectedBlockCount},lane_tokens=${webEvidence.laneTokens}` : 'selected=0,lane_tokens=0'}, web_promoted=${webPromoted ? `selected=${webPromoted.selectedBlockCount},lane_tokens=${webPromoted.laneTokens}` : 'selected=0,lane_tokens=0'}, collapsed_web_bucket=no`,
+    );
     if (classMix.length) {
       for (const entry of classMix) {
         lines.push(
@@ -78,6 +83,7 @@ export function buildCragExplainMemoryText(args: {
     lines.push('- backend-derived source classes: unavailable');
     lines.push('- policy retrieval mode: unknown (source=unknown)');
     lines.push('- normalized retrieval memory-class metadata: unavailable');
+    lines.push('- web class split: unavailable');
   }
 
   const discoveryPlan = isRecord(args.discoveryPlan) ? args.discoveryPlan : null;
