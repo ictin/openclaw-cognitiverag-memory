@@ -75,6 +75,16 @@ try {
     text,
     /web class split:\s*web_evidence=selected=0,lane_tokens=0,\s*web_promoted=selected=0,lane_tokens=0,\s*collapsed_web_bucket=no/i,
   );
+  assert.match(text, /web storage\/readback distinction:/i);
+  assert.match(
+    text,
+    /web_evidence:\s*storage_class=staged_external_evidence,\s*readback_blocks=0,\s*ids=none,\s*types=none,\s*provenance_blocks=0/i,
+  );
+  assert.match(
+    text,
+    /web_promoted:\s*storage_class=promoted_reusable_web_knowledge,\s*readback_blocks=0,\s*ids=none,\s*types=none,\s*provenance_blocks=0/i,
+  );
+  assert.match(text, /collapsed_web_bucket=no/i);
   assert.match(text, /semantic_memory:\s*selected=1,\s*lane_tokens=44/i);
   assert.match(text, /task_memory:\s*selected=1,\s*lane_tokens=30/i);
   assert.match(text, /episodic_memory:\s*selected=0,\s*lane_tokens=20/i);

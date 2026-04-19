@@ -1,0 +1,66 @@
+CognitiveRAG Memory Architecture
+- active context engine slot: cognitiverag-memory
+- cognitiverag-memory plugin loaded: yes
+- runtime entry path: unknown
+- runtime plugin root: unknown
+- backend ownership: canonical memory/retrieval/discovery intelligence
+- canonical taxonomy registry: 12 layers (F-001 canonical model)
+- online lane status: enabled
+- backend/session memory: primary CRAG context layer
+- backend promoted memory: durable normalized reusable memory
+- backend skill memory: typed principles/templates/examples/rubrics/anti-patterns/workflows
+- backend execution memory: stored skill-run execution cases linked to artifact usage
+- backend evaluation memory: rubric-scored quality cases linked to execution runs
+- local lossless session layer: raw + compacted session memory for recall/quote/expand
+- compaction truth: compacted local/session slices keep lineage and remain recoverable
+- corpus layer: chunked document retrieval with provenance
+- large-file layer: bounded excerpt retrieval with locators
+- fallback mirror MEMORY.md active: no
+- mirrors are supporting/export/debug layers, not canonical intelligence
+- canonical 12-layer memory taxonomy registry:
+  - Working memory [working_memory]: transient bounded assembly for current turn context
+  - Episodic memory [episodic_memory]: what happened in sessions/turn trajectories
+  - Semantic memory [semantic_memory]: durable reusable truths and promoted facts
+  - Procedural memory [procedural_memory]: reusable workflows and know-how
+  - Task memory [task_memory]: active objective, blockers, next steps, acceptance state
+  - Profile memory [profile_memory]: stable preferences and constraints
+  - Reasoning memory [reasoning_memory]: reasoning traces and support decisions
+  - Corpus memory [corpus_memory]: chunked local document retrieval with provenance
+  - Large-file memory [large_file_memory]: bounded excerpt retrieval for oversized sources
+  - Web evidence memory [web_evidence_memory]: freshness-sensitive staged web captures
+  - Web promoted memory [web_promoted_memory]: durable promoted web-backed knowledge
+  - Mirror memory [mirror_memory]: human/export/debug mirrors; never canonical intelligence
+- backend selector explanation: valid
+- selector intent family: investigative
+- selector budget: total=640, reserved=160
+- selector lane totals (tokens):
+  - web: 132
+  - corpus: 66
+  - episodic: 20
+- backend-derived source classes: corpus, web evidence, web promoted
+- policy retrieval mode: full_memory (source=backend)
+- normalized retrieval memory-class metadata:
+- web class split: web_evidence=selected=1,lane_tokens=132, web_promoted=selected=1,lane_tokens=132, collapsed_web_bucket=no
+- web storage/readback distinction:
+  - web_evidence: storage_class=staged_external_evidence, readback_blocks=1, ids=w_ev_01, types=web_evidence, provenance_blocks=1
+  - web_promoted: storage_class=promoted_reusable_web_knowledge, readback_blocks=1, ids=w_pr_01, types=web_promoted_fact, provenance_blocks=1
+  - collapsed_web_bucket=no
+  - episodic_memory: selected=0, lane_tokens=20, lanes=episodic, types=none
+  - corpus_memory: selected=1, lane_tokens=66, lanes=corpus, types=corpus_chunk
+  - web_evidence_memory: selected=1, lane_tokens=132, lanes=web, types=web_evidence
+  - web_promoted_memory: selected=1, lane_tokens=132, lanes=web, types=web_promoted_fact
+- selector reorder strategy: front_back_anchor
+- backend discovery plan surfaced: no
+- backend discovery findings surfaced: no
+- source truth:
+  - backend/session: primary CRAG conversation memory
+  - promoted: backend durable promoted memory
+  - skill memory: backend typed skill artifacts and task-aware packs
+  - execution memory: backend stored skill-run cases
+  - evaluation memory: backend rubric-based quality evaluations
+  - corpus: backend corpus retrieval with provenance
+  - large-file: backend bounded large-file excerpts
+  - web evidence: backend-cached raw web evidence (freshness-sensitive)
+  - web promoted: backend-promoted reusable web-backed facts
+  - promotion/freshness/conflict states (staged/trusted/stale/contradictory) stay backend-canonical
+  - mirrors (MEMORY.md + memory/*.md): support/export/debug surfaces only

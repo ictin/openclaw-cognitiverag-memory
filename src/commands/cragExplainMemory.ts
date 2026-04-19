@@ -2,6 +2,7 @@ import {
   deriveNormalizedMemoryClassMix,
   derivePolicyRetrievalMode,
   deriveSourceClasses,
+  deriveWebClassReadbackSummary,
   type ContractValidation,
   type OnlineLaneStatus,
 } from '../validators/contractValidator.js';
@@ -22,6 +23,7 @@ export function buildCragExplainMemoryText(args: {
   const sourceClasses = deriveSourceClasses(args.explanation);
   const retrievalMode = derivePolicyRetrievalMode(args.explanation);
   const classMix = deriveNormalizedMemoryClassMix(args.explanation);
+  const webReadback = deriveWebClassReadbackSummary(args.explanation);
   const lines: string[] = [
     'CognitiveRAG Memory Architecture',
     `- active context engine slot: ${args.slot}`,
@@ -67,6 +69,14 @@ export function buildCragExplainMemoryText(args: {
     lines.push(
       `- web class split: web_evidence=${webEvidence ? `selected=${webEvidence.selectedBlockCount},lane_tokens=${webEvidence.laneTokens}` : 'selected=0,lane_tokens=0'}, web_promoted=${webPromoted ? `selected=${webPromoted.selectedBlockCount},lane_tokens=${webPromoted.laneTokens}` : 'selected=0,lane_tokens=0'}, collapsed_web_bucket=no`,
     );
+    lines.push('- web storage/readback distinction:');
+    lines.push(
+      `  - web_evidence: storage_class=${webReadback?.webEvidence.storageClass ?? 'unknown'}, readback_blocks=${webReadback?.webEvidence.readbackBlockCount ?? 0}, ids=${webReadback?.webEvidence.selectedBlockIds.join('|') || 'none'}, types=${webReadback?.webEvidence.observedMemoryTypes.join('|') || 'none'}, provenance_blocks=${webReadback?.webEvidence.provenanceBackedCount ?? 0}`,
+    );
+    lines.push(
+      `  - web_promoted: storage_class=${webReadback?.webPromoted.storageClass ?? 'unknown'}, readback_blocks=${webReadback?.webPromoted.readbackBlockCount ?? 0}, ids=${webReadback?.webPromoted.selectedBlockIds.join('|') || 'none'}, types=${webReadback?.webPromoted.observedMemoryTypes.join('|') || 'none'}, provenance_blocks=${webReadback?.webPromoted.provenanceBackedCount ?? 0}`,
+    );
+    lines.push(`  - collapsed_web_bucket=${webReadback?.collapsedWebBucket === false ? 'no' : 'unknown'}`);
     if (classMix.length) {
       for (const entry of classMix) {
         lines.push(
@@ -84,6 +94,7 @@ export function buildCragExplainMemoryText(args: {
     lines.push('- policy retrieval mode: unknown (source=unknown)');
     lines.push('- normalized retrieval memory-class metadata: unavailable');
     lines.push('- web class split: unavailable');
+    lines.push('- web storage/readback distinction: unavailable');
   }
 
   const discoveryPlan = isRecord(args.discoveryPlan) ? args.discoveryPlan : null;

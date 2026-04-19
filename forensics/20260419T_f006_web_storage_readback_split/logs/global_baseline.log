@@ -1,0 +1,8 @@
+assemble tests passed
+assemble error-path test passed
+assemble regression tests passed
+lossless session memory test passed
+crag recall truth test passed
+plugin assemble uses backend selector test passed
+fail-open backend explanation validation test passed
+GLOBAL_BASELINE_PASS

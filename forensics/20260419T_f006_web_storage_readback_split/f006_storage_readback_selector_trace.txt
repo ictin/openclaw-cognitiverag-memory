@@ -1,0 +1,23 @@
+Backend selector explanation (authoritative):
+- intent_family: investigative
+- policy retrieval mode: full_memory (source=backend)
+- total_budget: 640
+- reserved_tokens: 160
+- reorder_strategy: front_back_anchor
+- selected_blocks: 3
+- dropped_blocks: 1
+- source classes: corpus, web evidence, web promoted
+- normalized memory class mix:
+  - episodic_memory: selected=0, lane_tokens=20, lanes=episodic
+  - corpus_memory: selected=1, lane_tokens=66, lanes=corpus
+  - web_evidence_memory: selected=1, lane_tokens=132, lanes=web
+  - web_promoted_memory: selected=1, lane_tokens=132, lanes=web
+- web class split: web_evidence=selected=1,lane_tokens=132, web_promoted=selected=1,lane_tokens=132, collapsed_web_bucket=no
+- web storage/readback distinction:
+  - web_evidence: storage_class=staged_external_evidence, readback_blocks=1, ids=w_ev_01, types=web_evidence, provenance_blocks=1
+  - web_promoted: storage_class=promoted_reusable_web_knowledge, readback_blocks=1, ids=w_pr_01, types=web_promoted_fact, provenance_blocks=1
+  - collapsed_web_bucket=no
+- lane totals:
+  - web: 132
+  - corpus: 66
+  - episodic: 20

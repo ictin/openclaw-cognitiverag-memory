@@ -56,6 +56,20 @@ export type NormalizedMemoryClassEntry = {
   observedMemoryTypes: string[];
 };
 
+export type WebClassReadbackEntry = {
+  storageClass: 'staged_external_evidence' | 'promoted_reusable_web_knowledge';
+  readbackBlockCount: number;
+  selectedBlockIds: string[];
+  observedMemoryTypes: string[];
+  provenanceBackedCount: number;
+};
+
+export type WebClassReadbackSummary = {
+  webEvidence: WebClassReadbackEntry;
+  webPromoted: WebClassReadbackEntry;
+  collapsedWebBucket: false;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -302,4 +316,54 @@ export function deriveNormalizedMemoryClassMix(explanation: ContractValidation):
     bucket.set(layerId, current);
   }
   return MEMORY_LAYER_ORDER.map((layerId) => bucket.get(layerId)).filter((entry): entry is NormalizedMemoryClassEntry => !!entry);
+}
+
+function isWebPromotedMemoryType(memoryTypeRaw: unknown): boolean {
+  const memoryType = normalizeMemoryType(memoryTypeRaw);
+  return memoryType.includes('web_promoted');
+}
+
+function isWebEvidenceMemoryType(memoryTypeRaw: unknown): boolean {
+  const memoryType = normalizeMemoryType(memoryTypeRaw);
+  return memoryType.includes('web_evidence') || memoryType === 'web';
+}
+
+export function deriveWebClassReadbackSummary(explanation: ContractValidation): WebClassReadbackSummary | null {
+  if (!explanation.ok) return null;
+
+  const webEvidence: WebClassReadbackEntry = {
+    storageClass: 'staged_external_evidence',
+    readbackBlockCount: 0,
+    selectedBlockIds: [],
+    observedMemoryTypes: [],
+    provenanceBackedCount: 0,
+  };
+  const webPromoted: WebClassReadbackEntry = {
+    storageClass: 'promoted_reusable_web_knowledge',
+    readbackBlockCount: 0,
+    selectedBlockIds: [],
+    observedMemoryTypes: [],
+    provenanceBackedCount: 0,
+  };
+
+  for (const block of explanation.value.selected_blocks || []) {
+    const lane = normalizeLane(block?.lane);
+    const memoryType = normalizeMemoryType(block?.memory_type);
+    const isPromoted = isWebPromotedMemoryType(block?.memory_type);
+    const isEvidence = isWebEvidenceMemoryType(block?.memory_type) || lane === 'web';
+    if (!isEvidence && !isPromoted) continue;
+
+    const target = isPromoted ? webPromoted : webEvidence;
+    target.readbackBlockCount += 1;
+    const id = String(block?.id ?? '').trim();
+    if (id && !target.selectedBlockIds.includes(id)) target.selectedBlockIds.push(id);
+    if (memoryType && !target.observedMemoryTypes.includes(memoryType)) target.observedMemoryTypes.push(memoryType);
+    if (block?.provenance && typeof block.provenance === 'object') target.provenanceBackedCount += 1;
+  }
+
+  return {
+    webEvidence,
+    webPromoted,
+    collapsedWebBucket: false,
+  };
 }

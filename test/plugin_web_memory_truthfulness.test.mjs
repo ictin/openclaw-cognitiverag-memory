@@ -35,6 +35,16 @@ assert.match(
   text,
   /web class split:\s*web_evidence=selected=1,lane_tokens=120,\s*web_promoted=selected=1,lane_tokens=120,\s*collapsed_web_bucket=no/i,
 );
+assert.match(text, /web storage\/readback distinction:/i);
+assert.match(
+  text,
+  /web_evidence:\s*storage_class=staged_external_evidence,\s*readback_blocks=1,\s*ids=w1,\s*types=web_evidence,\s*provenance_blocks=0/i,
+);
+assert.match(
+  text,
+  /web_promoted:\s*storage_class=promoted_reusable_web_knowledge,\s*readback_blocks=1,\s*ids=w2,\s*types=web_promoted_fact,\s*provenance_blocks=0/i,
+);
+assert.match(text, /collapsed_web_bucket=no/i);
 assert.match(text, /corpus_memory:\s*selected=1,\s*lane_tokens=44/i);
 assert.match(text, /web_evidence_memory:\s*selected=1,\s*lane_tokens=120/i);
 assert.match(text, /web_promoted_memory:\s*selected=1,\s*lane_tokens=120/i);
