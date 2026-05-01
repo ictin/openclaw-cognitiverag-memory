@@ -70,6 +70,17 @@ export type WebClassReadbackSummary = {
   collapsedWebBucket: false;
 };
 
+export type ReasoningReuseSummary = {
+  reasoningReuseVisible: boolean;
+  reasoningReuseBlockIds: string[];
+  reasoningReuseMemoryTypes: string[];
+  reasoningProvenanceCount: number;
+  genericPromotedBlockIds: string[];
+  genericPromotedMemoryTypes: string[];
+  genericPromotedProvenanceCount: number;
+  collapsedIntoGenericPromoted: false;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -366,4 +377,50 @@ export function deriveWebClassReadbackSummary(explanation: ContractValidation): 
     webPromoted,
     collapsedWebBucket: false,
   };
+}
+
+function isReasoningMemoryType(memoryTypeRaw: unknown): boolean {
+  const memoryType = normalizeMemoryType(memoryTypeRaw);
+  return memoryType.includes('reasoning');
+}
+
+function isGenericPromotedMemoryType(memoryTypeRaw: unknown): boolean {
+  const memoryType = normalizeMemoryType(memoryTypeRaw);
+  if (isWebPromotedMemoryType(memoryTypeRaw)) return false;
+  return memoryType.includes('promoted') || memoryType.includes('semantic');
+}
+
+export function deriveReasoningReuseSummary(explanation: ContractValidation): ReasoningReuseSummary | null {
+  if (!explanation.ok) return null;
+  const summary: ReasoningReuseSummary = {
+    reasoningReuseVisible: false,
+    reasoningReuseBlockIds: [],
+    reasoningReuseMemoryTypes: [],
+    reasoningProvenanceCount: 0,
+    genericPromotedBlockIds: [],
+    genericPromotedMemoryTypes: [],
+    genericPromotedProvenanceCount: 0,
+    collapsedIntoGenericPromoted: false,
+  };
+
+  for (const block of explanation.value.selected_blocks || []) {
+    const id = String(block?.id ?? '').trim();
+    const memoryType = normalizeMemoryType(block?.memory_type);
+    if (isReasoningMemoryType(block?.memory_type)) {
+      summary.reasoningReuseVisible = true;
+      if (id && !summary.reasoningReuseBlockIds.includes(id)) summary.reasoningReuseBlockIds.push(id);
+      if (memoryType && !summary.reasoningReuseMemoryTypes.includes(memoryType))
+        summary.reasoningReuseMemoryTypes.push(memoryType);
+      if (block?.provenance && typeof block.provenance === 'object') summary.reasoningProvenanceCount += 1;
+      continue;
+    }
+    if (isGenericPromotedMemoryType(block?.memory_type) || normalizeLane(block?.lane) === 'promoted') {
+      if (id && !summary.genericPromotedBlockIds.includes(id)) summary.genericPromotedBlockIds.push(id);
+      if (memoryType && !summary.genericPromotedMemoryTypes.includes(memoryType))
+        summary.genericPromotedMemoryTypes.push(memoryType);
+      if (block?.provenance && typeof block.provenance === 'object') summary.genericPromotedProvenanceCount += 1;
+    }
+  }
+
+  return summary;
 }

@@ -1,6 +1,7 @@
 import {
   deriveNormalizedMemoryClassMix,
   derivePolicyRetrievalMode,
+  deriveReasoningReuseSummary,
   deriveSourceClasses,
   deriveWebClassReadbackSummary,
   type ContractValidation,
@@ -15,6 +16,7 @@ export function buildBackendSelectorPrompt(explanation: ContractValidation): str
   const sourceClasses = deriveSourceClasses(explanation);
   const retrievalMode = derivePolicyRetrievalMode(explanation);
   const classMix = deriveNormalizedMemoryClassMix(explanation);
+  const reasoningReuse = deriveReasoningReuseSummary(explanation);
   const webReadback = deriveWebClassReadbackSummary(explanation);
   const webEvidence = classMix.find((entry) => entry.layerId === 'web_evidence_memory');
   const webPromoted = classMix.find((entry) => entry.layerId === 'web_promoted_memory');
@@ -36,6 +38,10 @@ export function buildBackendSelectorPrompt(explanation: ContractValidation): str
         )
       : ['  - none']),
     `- web class split: web_evidence=${webEvidence ? `selected=${webEvidence.selectedBlockCount},lane_tokens=${webEvidence.laneTokens}` : 'selected=0,lane_tokens=0'}, web_promoted=${webPromoted ? `selected=${webPromoted.selectedBlockCount},lane_tokens=${webPromoted.laneTokens}` : 'selected=0,lane_tokens=0'}, collapsed_web_bucket=no`,
+    '- reasoning-memory reuse distinction:',
+    `  - reasoning_reuse: visible=${reasoningReuse?.reasoningReuseVisible ? 'yes' : 'no'}, ids=${reasoningReuse?.reasoningReuseBlockIds.join('|') || 'none'}, types=${reasoningReuse?.reasoningReuseMemoryTypes.join('|') || 'none'}, provenance_blocks=${reasoningReuse?.reasoningProvenanceCount ?? 0}`,
+    `  - generic_promoted: ids=${reasoningReuse?.genericPromotedBlockIds.join('|') || 'none'}, types=${reasoningReuse?.genericPromotedMemoryTypes.join('|') || 'none'}, provenance_blocks=${reasoningReuse?.genericPromotedProvenanceCount ?? 0}`,
+    `  - collapsed_into_generic_promoted=${reasoningReuse?.collapsedIntoGenericPromoted === false ? 'no' : 'unknown'}`,
     '- web storage/readback distinction:',
     `  - web_evidence: storage_class=${webReadback?.webEvidence.storageClass ?? 'unknown'}, readback_blocks=${webReadback?.webEvidence.readbackBlockCount ?? 0}, ids=${webReadback?.webEvidence.selectedBlockIds.join('|') || 'none'}, types=${webReadback?.webEvidence.observedMemoryTypes.join('|') || 'none'}, provenance_blocks=${webReadback?.webEvidence.provenanceBackedCount ?? 0}`,
     `  - web_promoted: storage_class=${webReadback?.webPromoted.storageClass ?? 'unknown'}, readback_blocks=${webReadback?.webPromoted.readbackBlockCount ?? 0}, ids=${webReadback?.webPromoted.selectedBlockIds.join('|') || 'none'}, types=${webReadback?.webPromoted.observedMemoryTypes.join('|') || 'none'}, provenance_blocks=${webReadback?.webPromoted.provenanceBackedCount ?? 0}`,

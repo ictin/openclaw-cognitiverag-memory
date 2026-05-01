@@ -1,0 +1,4 @@
+plugin reasoning memory reuse surface test passed
+crag explain memory backend contract test passed
+plugin web memory truthfulness test passed
+LOCAL_REGRESSION_PASS

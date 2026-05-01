@@ -1,6 +1,7 @@
 import {
   deriveNormalizedMemoryClassMix,
   derivePolicyRetrievalMode,
+  deriveReasoningReuseSummary,
   deriveSourceClasses,
   deriveWebClassReadbackSummary,
   type ContractValidation,
@@ -23,6 +24,7 @@ export function buildCragExplainMemoryText(args: {
   const sourceClasses = deriveSourceClasses(args.explanation);
   const retrievalMode = derivePolicyRetrievalMode(args.explanation);
   const classMix = deriveNormalizedMemoryClassMix(args.explanation);
+  const reasoningReuse = deriveReasoningReuseSummary(args.explanation);
   const webReadback = deriveWebClassReadbackSummary(args.explanation);
   const lines: string[] = [
     'CognitiveRAG Memory Architecture',
@@ -69,6 +71,16 @@ export function buildCragExplainMemoryText(args: {
     lines.push(
       `- web class split: web_evidence=${webEvidence ? `selected=${webEvidence.selectedBlockCount},lane_tokens=${webEvidence.laneTokens}` : 'selected=0,lane_tokens=0'}, web_promoted=${webPromoted ? `selected=${webPromoted.selectedBlockCount},lane_tokens=${webPromoted.laneTokens}` : 'selected=0,lane_tokens=0'}, collapsed_web_bucket=no`,
     );
+    lines.push('- reasoning-memory reuse distinction:');
+    lines.push(
+      `  - reasoning_reuse: visible=${reasoningReuse?.reasoningReuseVisible ? 'yes' : 'no'}, ids=${reasoningReuse?.reasoningReuseBlockIds.join('|') || 'none'}, types=${reasoningReuse?.reasoningReuseMemoryTypes.join('|') || 'none'}, provenance_blocks=${reasoningReuse?.reasoningProvenanceCount ?? 0}`,
+    );
+    lines.push(
+      `  - generic_promoted: ids=${reasoningReuse?.genericPromotedBlockIds.join('|') || 'none'}, types=${reasoningReuse?.genericPromotedMemoryTypes.join('|') || 'none'}, provenance_blocks=${reasoningReuse?.genericPromotedProvenanceCount ?? 0}`,
+    );
+    lines.push(
+      `  - collapsed_into_generic_promoted=${reasoningReuse?.collapsedIntoGenericPromoted === false ? 'no' : 'unknown'}`,
+    );
     lines.push('- web storage/readback distinction:');
     lines.push(
       `  - web_evidence: storage_class=${webReadback?.webEvidence.storageClass ?? 'unknown'}, readback_blocks=${webReadback?.webEvidence.readbackBlockCount ?? 0}, ids=${webReadback?.webEvidence.selectedBlockIds.join('|') || 'none'}, types=${webReadback?.webEvidence.observedMemoryTypes.join('|') || 'none'}, provenance_blocks=${webReadback?.webEvidence.provenanceBackedCount ?? 0}`,
@@ -94,6 +106,7 @@ export function buildCragExplainMemoryText(args: {
     lines.push('- policy retrieval mode: unknown (source=unknown)');
     lines.push('- normalized retrieval memory-class metadata: unavailable');
     lines.push('- web class split: unavailable');
+    lines.push('- reasoning-memory reuse distinction: unavailable');
     lines.push('- web storage/readback distinction: unavailable');
   }
 

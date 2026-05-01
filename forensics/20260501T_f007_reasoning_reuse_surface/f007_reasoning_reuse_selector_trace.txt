@@ -1,0 +1,28 @@
+Backend selector explanation (authoritative):
+- intent_family: explain_support
+- policy retrieval mode: task_memory (source=backend)
+- total_budget: 640
+- reserved_tokens: 160
+- reorder_strategy: front_back_anchor
+- selected_blocks: 3
+- dropped_blocks: 1
+- source classes: web evidence
+- normalized memory class mix:
+  - episodic_memory: selected=0, lane_tokens=32, lanes=episodic
+  - semantic_memory: selected=1, lane_tokens=72, lanes=promoted
+  - reasoning_memory: selected=1, lane_tokens=84, lanes=reasoning
+  - web_evidence_memory: selected=1, lane_tokens=60, lanes=web
+- web class split: web_evidence=selected=1,lane_tokens=60, web_promoted=selected=0,lane_tokens=0, collapsed_web_bucket=no
+- reasoning-memory reuse distinction:
+  - reasoning_reuse: visible=yes, ids=r_case_01, types=reasoning_record, provenance_blocks=1
+  - generic_promoted: ids=p_fact_01, types=promoted_fact, provenance_blocks=1
+  - collapsed_into_generic_promoted=no
+- web storage/readback distinction:
+  - web_evidence: storage_class=staged_external_evidence, readback_blocks=1, ids=w1, types=web_evidence, provenance_blocks=1
+  - web_promoted: storage_class=promoted_reusable_web_knowledge, readback_blocks=0, ids=none, types=none, provenance_blocks=0
+  - collapsed_web_bucket=no
+- lane totals:
+  - reasoning: 84
+  - promoted: 72
+  - web: 60
+  - episodic: 32
