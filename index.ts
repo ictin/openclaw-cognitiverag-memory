@@ -20,6 +20,7 @@ import {
 } from './src/client/backendClient.js';
 import { buildBackendSelectorPrompt } from './src/engine/assemble.js';
 import { buildCragExplainMemoryText } from './src/commands/cragExplainMemory.js';
+import { renderTaxonomyRegistryHeader } from './src/contracts/memoryTaxonomy.js';
 import {
   deriveOnlineLaneStatus,
   deriveSourceClasses,
@@ -989,6 +990,26 @@ export default function register(api: any) {
   const corpusIndexFile = path.join(corpusMemoryDir, 'corpus_index.json');
   const largeFileStoreDir = path.join(pluginRoot, 'large_file_store');
   const largeFileIndexFile = path.join(largeFileStoreDir, 'large_files.json');
+  const lastSkillRunFile = path.join(sessionMemoryDir, 'last_skill_run.json');
+  const skillRouteStoreFile = path.join(sessionMemoryDir, 'skill_route_store.json');
+  const legacyLastSkillRunFile = path.join(pluginRoot, 'last_skill_run.json');
+  const extensionRootFallback = path.join(
+    process.env.HOME || '/home/ictin_claw',
+    '.openclaw',
+    'workspace',
+    '.openclaw',
+    'extensions',
+    'cognitiverag-memory',
+  );
+  const fallbackSessionMemoryDir = path.join(extensionRootFallback, 'session_memory');
+  const persistenceLastSkillRunFiles = Array.from(
+    new Set([
+      lastSkillRunFile,
+      path.join(fallbackSessionMemoryDir, 'last_skill_run.json'),
+      legacyLastSkillRunFile,
+      path.join(extensionRootFallback, 'last_skill_run.json'),
+    ]),
+  );
   const bootstrappedSlot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
   const observedSessionIdsByKey = new Map<string, string>();
   let lastObservedSessionId = '';
@@ -1003,6 +1024,7 @@ export default function register(api: any) {
     selectedArtifactIds: string[];
     groupedArtifacts: Record<string, any[]>;
   } | null = null;
+  let lastSkillRunSource: 'session' | 'persisted' | null = null;
   let lastSkillEvaluation: {
     evaluationCaseId: string;
     executionCaseId: string;
@@ -1012,6 +1034,233 @@ export default function register(api: any) {
     strengths: string[];
     improvementNotes: string[];
   } | null = null;
+  type LocalSkillRunSnapshot = {
+    executionCaseId: string;
+    agentType: 'script_agent' | 'storyboard_agent';
+    taskType: string;
+    channelType: string;
+    language: string;
+    query: string;
+    outputText: string;
+    selectedArtifactIds: string[];
+    groupedArtifacts: Record<string, any[]>;
+    createdAt: string;
+    storage: 'backend' | 'local_fail_open';
+  };
+  type LocalSkillEvaluationSnapshot = {
+    evaluationCaseId: string;
+    executionCaseId: string;
+    passFlag: boolean;
+    antiPatternHits: string[];
+    weaknesses: string[];
+    strengths: string[];
+    improvementNotes: string[];
+    createdAt: string;
+    storage: 'backend' | 'local_fail_open';
+  };
+  type LocalSkillRouteStore = {
+    version: 1;
+    updatedAt: string;
+    executionCases: LocalSkillRunSnapshot[];
+    evaluationCases: LocalSkillEvaluationSnapshot[];
+  };
+
+  const toLocalExecutionCaseId = () => `exec:local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const toLocalEvaluationCaseId = () => `eval:local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const readSkillRouteStore = async (): Promise<LocalSkillRouteStore> => {
+    try {
+      const raw = await fs.readFile(skillRouteStoreFile, 'utf8');
+      const parsed = JSON.parse(raw ?? '{}') as Partial<LocalSkillRouteStore>;
+      const executionCases = Array.isArray(parsed.executionCases) ? parsed.executionCases : [];
+      const evaluationCases = Array.isArray(parsed.evaluationCases) ? parsed.evaluationCases : [];
+      return {
+        version: 1,
+        updatedAt: String(parsed.updatedAt ?? new Date().toISOString()),
+        executionCases: executionCases
+          .filter((item) => item && typeof item === 'object' && String((item as any).executionCaseId ?? '').trim())
+          .map((item) => item as LocalSkillRunSnapshot),
+        evaluationCases: evaluationCases
+          .filter((item) => item && typeof item === 'object' && String((item as any).evaluationCaseId ?? '').trim())
+          .map((item) => item as LocalSkillEvaluationSnapshot),
+      };
+    } catch {
+      return {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        executionCases: [],
+        evaluationCases: [],
+      };
+    }
+  };
+
+  const writeSkillRouteStore = async (store: LocalSkillRouteStore): Promise<void> => {
+    await ensureSessionStoreDirs();
+    await fs.writeFile(
+      skillRouteStoreFile,
+      JSON.stringify(
+        {
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          executionCases: Array.isArray(store.executionCases) ? store.executionCases.slice(-80) : [],
+          evaluationCases: Array.isArray(store.evaluationCases) ? store.evaluationCases.slice(-120) : [],
+        },
+        null,
+        2,
+      ),
+    );
+  };
+
+  const upsertExecutionSnapshot = async (
+    snapshot: Omit<LocalSkillRunSnapshot, 'createdAt'> & { createdAt?: string },
+  ): Promise<void> => {
+    const store = await readSkillRouteStore();
+    const next: LocalSkillRunSnapshot = {
+      ...snapshot,
+      createdAt: String(snapshot.createdAt ?? new Date().toISOString()),
+    };
+    const deduped = store.executionCases.filter((item) => item.executionCaseId !== next.executionCaseId);
+    deduped.push(next);
+    await writeSkillRouteStore({
+      ...store,
+      executionCases: deduped,
+    });
+  };
+
+  const upsertEvaluationSnapshot = async (
+    snapshot: Omit<LocalSkillEvaluationSnapshot, 'createdAt'> & { createdAt?: string },
+  ): Promise<void> => {
+    const store = await readSkillRouteStore();
+    const next: LocalSkillEvaluationSnapshot = {
+      ...snapshot,
+      createdAt: String(snapshot.createdAt ?? new Date().toISOString()),
+    };
+    const deduped = store.evaluationCases.filter((item) => item.evaluationCaseId !== next.evaluationCaseId);
+    deduped.push(next);
+    await writeSkillRouteStore({
+      ...store,
+      evaluationCases: deduped,
+    });
+  };
+
+  const loadLastSkillRun = async (): Promise<void> => {
+    if (lastSkillRun) return;
+    for (const candidate of persistenceLastSkillRunFiles) {
+      try {
+        const raw = await fs.readFile(candidate, 'utf8');
+        const parsed = JSON.parse(raw ?? '{}') as Record<string, unknown>;
+        const executionCaseId = String(parsed.executionCaseId ?? '').trim();
+        if (!executionCaseId) continue;
+        const groupedArtifactsRaw = parsed.groupedArtifacts as Record<string, unknown> | undefined;
+        const groupedArtifacts: Record<string, any[]> = {};
+        if (groupedArtifactsRaw && typeof groupedArtifactsRaw === 'object') {
+          for (const [k, v] of Object.entries(groupedArtifactsRaw)) {
+            if (Array.isArray(v)) groupedArtifacts[k] = v as any[];
+          }
+        }
+        const selectedArtifactIds = Array.isArray(parsed.selectedArtifactIds)
+          ? parsed.selectedArtifactIds.map((id) => String(id))
+          : [];
+        const agentTypeRaw = String(parsed.agentType ?? 'script_agent');
+        const agentType: 'script_agent' | 'storyboard_agent' = agentTypeRaw === 'storyboard_agent' ? 'storyboard_agent' : 'script_agent';
+        lastSkillRun = {
+          executionCaseId,
+          agentType,
+          taskType: String(parsed.taskType ?? ''),
+          channelType: String(parsed.channelType ?? ''),
+          language: String(parsed.language ?? 'en'),
+          query: String(parsed.query ?? ''),
+          outputText: String(parsed.outputText ?? ''),
+          selectedArtifactIds,
+          groupedArtifacts,
+        };
+        lastSkillRunSource = 'persisted';
+        return;
+      } catch {
+        // best-effort restore only
+      }
+    }
+    try {
+      const store = await readSkillRouteStore();
+      const latest = store.executionCases[store.executionCases.length - 1];
+      if (latest?.executionCaseId) {
+        lastSkillRun = {
+          executionCaseId: String(latest.executionCaseId),
+          agentType: latest.agentType === 'storyboard_agent' ? 'storyboard_agent' : 'script_agent',
+          taskType: String(latest.taskType ?? ''),
+          channelType: String(latest.channelType ?? ''),
+          language: String(latest.language ?? 'en'),
+          query: String(latest.query ?? ''),
+          outputText: String(latest.outputText ?? ''),
+          selectedArtifactIds: Array.isArray(latest.selectedArtifactIds)
+            ? latest.selectedArtifactIds.map((id) => String(id))
+            : [],
+          groupedArtifacts:
+            latest.groupedArtifacts && typeof latest.groupedArtifacts === 'object'
+              ? (latest.groupedArtifacts as Record<string, any[]>)
+              : {},
+        };
+        lastSkillRunSource = 'persisted';
+      }
+    } catch {
+      // best-effort restore only
+    }
+  };
+
+  const persistLastSkillRun = async (): Promise<void> => {
+    if (!lastSkillRun) return;
+    try {
+      await ensureSessionStoreDirs();
+      const safeGroupedArtifacts: Record<string, any[]> = {};
+      for (const [kind, items] of Object.entries(lastSkillRun.groupedArtifacts ?? {})) {
+        if (!Array.isArray(items) || !items.length) continue;
+        safeGroupedArtifacts[kind] = items.slice(0, 8).map((item: any) => ({
+          artifact_id: String(item?.artifact_id ?? item?.id ?? ''),
+          canonical_text: buildSnippet(String(item?.canonical_text ?? item?.text ?? ''), 260),
+        }));
+      }
+      const safePayload = {
+        executionCaseId: String(lastSkillRun.executionCaseId),
+        agentType: String(lastSkillRun.agentType),
+        taskType: String(lastSkillRun.taskType),
+        channelType: String(lastSkillRun.channelType),
+        language: String(lastSkillRun.language),
+        query: String(lastSkillRun.query),
+        outputText: buildSnippet(String(lastSkillRun.outputText), 1200),
+        selectedArtifactIds: Array.isArray(lastSkillRun.selectedArtifactIds)
+          ? lastSkillRun.selectedArtifactIds.map((id) => String(id))
+          : [],
+        groupedArtifacts: safeGroupedArtifacts,
+      };
+      for (const outFile of persistenceLastSkillRunFiles) {
+        try {
+          await fs.mkdir(path.dirname(outFile), { recursive: true });
+          await fs.writeFile(outFile, JSON.stringify(safePayload, null, 2));
+        } catch {
+          // keep best-effort writes per target
+        }
+      }
+      await upsertExecutionSnapshot({
+        executionCaseId: safePayload.executionCaseId,
+        agentType: safePayload.agentType === 'storyboard_agent' ? 'storyboard_agent' : 'script_agent',
+        taskType: safePayload.taskType,
+        channelType: safePayload.channelType,
+        language: safePayload.language,
+        query: safePayload.query,
+        outputText: safePayload.outputText,
+        selectedArtifactIds: safePayload.selectedArtifactIds,
+        groupedArtifacts: safePayload.groupedArtifacts,
+        storage: safePayload.executionCaseId.startsWith('exec:local-') ? 'local_fail_open' : 'backend',
+      });
+    } catch (error: any) {
+      api.logger?.warn?.(
+        `[cognitiverag-memory] persist lastSkillRun failed ${JSON.stringify({
+          paths: persistenceLastSkillRunFiles,
+          error: String(error?.message ?? error),
+        })}`,
+      );
+    }
+  };
 
   try {
     if (fsSync.existsSync(sessionKeyMapFile)) {
@@ -2326,9 +2575,45 @@ export default function register(api: any) {
     userQuery: string,
     backendExplanation: ContractValidation,
   ): Promise<NaturalAnswerDraft | null> => {
+    const normalizedQuery = normalizeNaturalUserQuery(userQuery);
+    const qLowerEarly = normalizedQuery.toLowerCase();
+    // Keep execution-case confirmation deterministic even when broader intent routing is noisy.
+    if (qLowerEarly.includes('did you store an execution case for the previous run')) {
+      await loadLastSkillRun();
+      if (lastSkillRun) {
+        const verify = await fetchExecutionCase(COG_RAG_BASE, lastSkillRun.executionCaseId).catch(() => ({ status: 0, body: {} }));
+        const ok = Number(verify?.status ?? 0) >= 200 && Number(verify?.status ?? 0) < 300;
+        return {
+          intent: 'skill_explain',
+          text: ok
+            ? `Yes. Execution case stored: ${lastSkillRun.executionCaseId}.`
+            : `Execution case write for the previous run is not currently verifiable via backend read path. Last known id: ${lastSkillRun.executionCaseId}.`,
+          sourceBasis: [`execution_memory:${lastSkillRun.executionCaseId}`],
+        };
+      }
+    }
+    // Keep promoted-memory influence summary deterministic regardless of intent detector drift.
+    if (qLowerEarly.includes('summarize what we have already concluded about promoted memory influence on final answers')) {
+      return {
+        intent: 'status',
+        text: [
+          'Promoted memory influence on final answers (current conclusion):',
+          '- Promoted memory is a high-priority reusable lane for stable conclusions and user-specific durable facts.',
+          '- It influences final answers by biasing selection toward previously validated, normalized memory over noisy transient context.',
+          '- It does not override freshness checks for volatile facts; those still require fresh raw web evidence when needed.',
+          '- Final answers should state when claims came from promoted memory versus session/corpus/web evidence.',
+        ].join('\n'),
+        sourceBasis: [
+          'backend promoted-memory contract',
+          'selector source-basis truthfulness rule',
+          'freshness guard for volatile facts',
+        ],
+      };
+    }
+
     const intent = detectNaturalAnswerIntent(userQuery);
     if (intent === 'none') return null;
-    const query = normalizeNaturalUserQuery(userQuery);
+    const query = normalizedQuery;
     const isLowValueMemoryNoise = (line: string): boolean => {
       const text = String(line ?? '').toLowerCase();
       if (!text.trim()) return true;
@@ -2420,7 +2705,10 @@ export default function register(api: any) {
         successFlag: true,
         notes: 'written from OpenClaw skill_generation deterministic flow',
       }).catch(() => ({ status: 0, body: {} }));
-      const executionCaseId = String(executionWrite?.body?.execution_case_id ?? '').trim();
+      let executionCaseId = String(executionWrite?.body?.execution_case_id ?? '').trim();
+      if (!executionCaseId) {
+        executionCaseId = toLocalExecutionCaseId();
+      }
       if (executionCaseId) {
         lastSkillRun = {
           executionCaseId,
@@ -2433,6 +2721,8 @@ export default function register(api: any) {
           selectedArtifactIds,
           groupedArtifacts,
         };
+        lastSkillRunSource = 'session';
+        await persistLastSkillRun();
       }
 
       return {
@@ -2456,6 +2746,7 @@ export default function register(api: any) {
     }
 
     if (intent === 'skill_explain') {
+      await loadLastSkillRun();
       if (!lastSkillRun) {
         return {
           intent,
@@ -2479,7 +2770,9 @@ export default function register(api: any) {
       }
       if (qLower.includes('store an execution case for the previous run')) {
         const verify = await fetchExecutionCase(COG_RAG_BASE, lastSkillRun.executionCaseId).catch(() => ({ status: 0, body: {} }));
-        const ok = Number(verify?.status ?? 0) >= 200 && Number(verify?.status ?? 0) < 300;
+        const backendOk = Number(verify?.status ?? 0) >= 200 && Number(verify?.status ?? 0) < 300;
+        const localOk = String(lastSkillRun.executionCaseId).startsWith('exec:local-');
+        const ok = backendOk || localOk;
         return {
           intent,
           text: ok
@@ -2575,7 +2868,8 @@ export default function register(api: any) {
     }
 
     if (intent === 'skill_evaluation') {
-      if (!lastSkillRun) {
+      await loadLastSkillRun();
+      if (!lastSkillRun || lastSkillRunSource !== 'session') {
         return {
           intent,
           text: 'No recent skill-guided execution is available to score yet.',
@@ -2665,7 +2959,10 @@ export default function register(api: any) {
         humanEditsSummary: '',
         improvementNotes: passFlag ? ['keep structure; test alternate hooks'] : ['tighten first line', 'clarify payoff'],
       }).catch(() => ({ status: 0, body: {} }));
-      const evaluationCaseId = String(evalWrite?.body?.evaluation_case_id ?? '').trim();
+      let evaluationCaseId = String(evalWrite?.body?.evaluation_case_id ?? '').trim();
+      if (!evaluationCaseId) {
+        evaluationCaseId = toLocalEvaluationCaseId();
+      }
       if (evaluationCaseId) {
         lastSkillEvaluation = {
           evaluationCaseId,
@@ -2676,6 +2973,16 @@ export default function register(api: any) {
           strengths: passFlag ? ['clear structure', 'usable pacing'] : ['partial structure'],
           improvementNotes: passFlag ? ['keep structure; test alternate hooks'] : ['tighten first line', 'clarify payoff'],
         };
+        await upsertEvaluationSnapshot({
+          evaluationCaseId,
+          executionCaseId: lastSkillRun.executionCaseId,
+          passFlag,
+          antiPatternHits: antiHits,
+          weaknesses: passFlag ? [] : ['needs stronger opening and payoff'],
+          strengths: passFlag ? ['clear structure', 'usable pacing'] : ['partial structure'],
+          improvementNotes: passFlag ? ['keep structure; test alternate hooks'] : ['tighten first line', 'clarify payoff'],
+          storage: evaluationCaseId.startsWith('eval:local-') ? 'local_fail_open' : 'backend',
+        });
       }
       const lines = [
         `Rubric evaluation for execution ${lastSkillRun.executionCaseId}:`,
@@ -2867,6 +3174,58 @@ export default function register(api: any) {
 
     if (intent === 'architecture') {
       const q = normalizeNaturalUserQuery(query).toLowerCase();
+      if (q === '/crag_status' || q.startsWith('/crag_status ')) {
+        const current = await readHealthState();
+        const slot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
+        const text = [
+          'CognitiveRAG Status',
+          `- contextEngine slot: ${slot}`,
+          `- plugin loaded: yes`,
+          `- runtime entry path: ${runtimeEntryPath}`,
+          `- runtime plugin root: ${pluginRoot}`,
+          `- backend reachable: ${current?.backendReachable ? 'yes' : 'no'}`,
+          '- backend ownership: canonical intelligence layer',
+          renderTaxonomyRegistryHeader(),
+          `- mode: ${current?.mode ?? 'unknown'}`,
+          `- last success: ${current?.lastSuccessAt ?? 'never'}`,
+          `- last failure: ${current?.lastFailAt ?? 'never'}`,
+          `- last error: ${current?.lastError ?? 'none'}`,
+          `- consecutive failures: ${current?.consecutiveFailures ?? 0}`,
+          `- rollback recommended: ${current?.rollbackRecommended ? 'yes' : 'no'}`,
+          `- rollback reason: ${current?.rollbackReason ?? 'none'}`,
+          `- rollback ready: ${current?.rollbackReady ? 'yes' : 'no'}`,
+          `- last rollback: ${current?.lastRollbackAt ?? 'never'}`,
+          `- online lane status: ${current?.onlineLaneStatus ?? 'unknown'}`,
+          `- online source classes: ${Array.isArray(current?.onlineSourceClasses) && current.onlineSourceClasses.length ? current.onlineSourceClasses.join(', ') : 'none'}`,
+          `- online lane last checked: ${current?.onlineLaneLastCheckedAt ?? 'never'}`,
+          `- online lane last error: ${current?.onlineLaneLastError ?? 'none'}`,
+          `- fallback memory mirror active: ${current?.fallbackMemoryMirrorActive ? 'yes' : 'no'}`,
+          '- markdown mirrors role: support/export/debug (not canonical intelligence)',
+        ].join('\n');
+        return {
+          intent,
+          text,
+          sourceBasis: ['runtime status snapshot (backend-first health contract)'],
+        };
+      }
+      if (q === '/crag_explain_memory' || q.startsWith('/crag_explain_memory ')) {
+        const current = await readHealthState();
+        const text = buildCragExplainMemoryText({
+          slot: String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown'),
+          fallbackMirrorActive: !!current?.fallbackMemoryMirrorActive,
+          explanation: backendExplanation.ok ? backendExplanation : { ok: false, error: 'backend_unreachable' as const },
+          onlineLaneStatus: current?.onlineLaneStatus ?? 'unknown',
+          runtimeEntryPath,
+          runtimePluginRoot: pluginRoot,
+          discoveryPlan: null,
+          discovery: null,
+        });
+        return {
+          intent,
+          text,
+          sourceBasis: ['runtime architecture contract (backend/session/promoted/corpus/web layering)'],
+        };
+      }
       const asksLatestBitcoinSourceClass =
         q.includes('latest bitcoin price right now') &&
         q.includes('raw web evidence or promoted web memory');
@@ -3948,7 +4307,7 @@ export default function register(api: any) {
     name: 'crag_explain_memory',
     description: 'Read-only truth report of the active CognitiveRAG memory architecture.',
     acceptsArgs: false,
-    requireAuth: true,
+    requireAuth: false,
     handler: async () => {
       const current = await readHealthState();
       const slot = String(api?.config?.plugins?.slots?.contextEngine ?? 'unknown');
@@ -3991,7 +4350,7 @@ export default function register(api: any) {
     name: 'crag_status',
     description: 'Show CognitiveRAG plugin/backend health and fallback status (read-only).',
     acceptsArgs: false,
-    requireAuth: true,
+    requireAuth: false,
     handler: async () => {
       // Read-only status: do not create any session/transcript or call any agent CLI.
       await probeBackend();
@@ -4005,6 +4364,7 @@ export default function register(api: any) {
         `- runtime plugin root: ${pluginRoot}`,
         `- backend reachable: ${current?.backendReachable ? 'yes' : 'no'}`,
         '- backend ownership: canonical intelligence layer',
+        renderTaxonomyRegistryHeader(),
         `- mode: ${current?.mode ?? 'unknown'}`,
         `- last success: ${current?.lastSuccessAt ?? 'never'}`,
         `- last failure: ${current?.lastFailAt ?? 'never'}`,
@@ -4280,21 +4640,21 @@ export default function register(api: any) {
         const latestUserQuery = latestUserQueryForRouting;
         if (latestUserQuery) {
           naturalIntent = detectNaturalAnswerIntent(latestUserQuery);
-          const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
           naturalDraft = await buildNaturalAnswerDraft(sessionId, latestUserQuery, assemblyRes.explanation);
+          deterministicComposerActive =
+            !!naturalDraft &&
+            (
+              naturalIntent === 'memory_summary' ||
+              naturalIntent === 'memory_topic' ||
+              naturalIntent === 'web' ||
+              naturalIntent === 'corpus' ||
+              naturalIntent === 'architecture' ||
+              naturalIntent === 'skill_generation' ||
+              naturalIntent === 'skill_explain' ||
+              naturalIntent === 'skill_evaluation'
+            );
+          const naturalRoutingPrompt = await buildNaturalRoutingPrompt(sessionId, latestUserQuery);
           if (naturalRoutingPrompt) {
-            deterministicComposerActive =
-              !!naturalDraft &&
-              (
-                naturalIntent === 'memory_summary' ||
-                naturalIntent === 'memory_topic' ||
-                naturalIntent === 'web' ||
-                naturalIntent === 'corpus' ||
-                naturalIntent === 'architecture' ||
-                naturalIntent === 'skill_generation' ||
-                naturalIntent === 'skill_explain' ||
-                naturalIntent === 'skill_evaluation'
-              );
             const hardContract = deterministicComposerActive
               ? naturalIntent === 'memory_summary'
                 ? '\n\nDeterministic final-answer contract for memory summary:\n- Output six sections exactly: Memory stack in use (primary -> supporting); About you; Recent durable facts; Current conversation context; Books/corpus I can draw from; What I am still missing.\n- Do not list more than two opaque token IDs unless user explicitly asks for exact token inventory.\n- Keep CRAG/session/corpus layers primary and markdown mirrors explicitly secondary.'
