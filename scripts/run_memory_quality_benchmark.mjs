@@ -82,16 +82,20 @@ function isRetryableGatewayError(error) {
   const text = String(error?.message ?? error ?? '');
   return (
     text.includes('gateway closed') ||
+    text.includes('gateway timeout') ||
+    text.includes('timeout after') ||
+    text.includes('ETIMEDOUT') ||
     text.includes('ECONNREFUSED') ||
     text.includes('connect ECONNREFUSED') ||
-    text.includes('abnormal closure')
+    text.includes('abnormal closure') ||
+    text.includes('no close reason')
   );
 }
 
-function callGateway(method, params) {
+function callGateway(method, params, options = {}) {
+  const { maxAttempts = 8, baseBackoffMs = 1500 } = options;
   callIndex += 1;
   let raw = '';
-  const maxAttempts = 6;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       raw = execFileSync('openclaw', ['gateway', 'call', method, '--params', JSON.stringify(params)], {
@@ -102,7 +106,7 @@ function callGateway(method, params) {
       if (!isRetryableGatewayError(error) || attempt === maxAttempts) {
         throw error;
       }
-      sleepMs(Math.min(8000, attempt * 1500));
+      sleepMs(Math.min(12000, attempt * baseBackoffMs));
     }
   }
   const rawPath = path.join(sessionsDir, `${String(callIndex).padStart(2, '0')}_${method}.raw`);
@@ -112,6 +116,10 @@ function callGateway(method, params) {
   fsSync.writeFileSync(jsonPath, JSON.stringify(parsed, null, 2));
   calls.push({ method, params, rawPath, jsonPath });
   return parsed;
+}
+
+function callGatewayStableAfterRestart(method, params) {
+  return callGateway(method, params, { maxAttempts: 20, baseBackoffMs: 2500 });
 }
 
 function pass(name, ok, details = {}, artifacts = []) {
@@ -207,19 +215,23 @@ try {
   fsSync.writeFileSync(path.join(benchDir, 'benchmark_get_pre_restart.json'), JSON.stringify(preRestart, null, 2));
 
   execSync('systemctl --user restart openclaw-gateway.service', { stdio: 'pipe' });
+  // Give websocket listener a short warm-up window before status probing.
+  sleepMs(3000);
 
-  callGateway('status', {});
+  // Gateway restart can briefly produce 1006/timeout before loopback websocket is stable.
+  // Keep this probe strict, but retry longer so transient lifecycle churn is not treated as product failure.
+  callGateway('status', {}, { maxAttempts: 30, baseBackoffMs: 2500 });
   if (targetSessionId) {
-    callGateway('sessions.send', {
+    callGatewayStableAfterRestart('sessions.send', {
       key: benchmarkKey,
       message: `/crag_session_quote --session-id ${targetSessionId} --exact ${oldAnchorToken}`,
     });
-    callGateway('sessions.send', {
+    callGatewayStableAfterRestart('sessions.send', {
       key: benchmarkKey,
       message: `/crag_recall --session-id ${targetSessionId} from book ${bookExactQuery}`,
     });
   }
-  const postRestart = callGateway('sessions.get', { key: benchmarkKey });
+  const postRestart = callGatewayStableAfterRestart('sessions.get', { key: benchmarkKey });
   fsSync.writeFileSync(path.join(benchDir, 'benchmark_get_post_restart.json'), JSON.stringify(postRestart, null, 2));
 
   const allText = JSON.stringify(postRestart);
